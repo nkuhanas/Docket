@@ -966,7 +966,18 @@ class TrackedContextService:
         )
         return affected
 
-    def apply_task(self, _session: Session, changeset: ChangeSet, change: Any) -> list[str]:
+    def apply_task(
+        self, _session: Session, changeset: ChangeSet, change: Any, *, derived: bool = False,
+    ) -> list[str]:
+        from docket.models import IntentSession
+        from docket.services.task_subtrees import changed_child, descendants
+
+        support = []
+        intent = self.session.get(IntentSession, changeset.intent_session_id)
+        if (not derived and change.action != "create"
+                and (intent is None or not intent.source_policy_effect_ref)):
+            support = [frame for child in descendants(self.session, change.object_ref)
+                       if (frame := changed_child(change, child)) is not None]
         if change.action == "create":
             spec = TaskInput.model_validate(change.create_spec)
             derived = spec.item_ref is None
@@ -1061,7 +1072,7 @@ class TrackedContextService:
                 task.reminder_timezone = None
             elif change.action == "update":
                 patch = TaskPatchInput.model_validate(change.payload)
-                from docket.models import IntentSession, TaskProviderBinding
+                from docket.models import TaskProviderBinding
 
                 intent = self.session.get(IntentSession, changeset.intent_session_id)
                 binding = self.session.scalar(select(TaskProviderBinding).where(
@@ -1072,7 +1083,8 @@ class TrackedContextService:
                     "title", "description", "scheduled_date", "task_state", "completed_at",
                     "parent_task_ref", "task_list_ref", "after_task_ref", "canonical_status",
                 }
-                if (binding is not None and intent is not None and intent.source_request_ref
+                if (not derived and binding is not None and intent is not None
+                        and intent.source_request_ref
                         and provider_fields.intersection(patch.model_fields_set)
                         and changeset.expected_versions.get(binding.ref_id) != binding.version):
                     raise DocketError(
@@ -1119,7 +1131,10 @@ class TrackedContextService:
             change=change,
             affected_refs=[task.ref_id, task.item_ref],
         )
-        return [task.ref_id]
+        refs = [task.ref_id]
+        for frame in support:
+            refs.extend(self.apply_task(self.session, changeset, frame, derived=True))
+        return refs
 
     def apply_temporal_projection(
         self, _session: Session, changeset: ChangeSet, change: Any

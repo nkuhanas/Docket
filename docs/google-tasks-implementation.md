@@ -31,7 +31,7 @@ acceptance is claimed by a fixture or disabled capability.
 | G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Task generation flows serialize private/free popup-zero markers; real adapter read-back/privacy-change checks pass. Inbound helper reconciliation remains |
 | G2 workload origin | Validated typed origin survives cache refresh/restart and excludes canonical/cache commitment/capacity accounting | Scoped generation/retained-operation origin survives full cache rebuild and retired/unknown-create generations; workload excludes it before timing/accounting. Copied labels remain ordinary observations |
 | G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Task marker compilation and rendering/reconciliation pass autumn and spring transitions, including real UTC transport acceptance |
-| G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Live moves carry children/grandchildren with stable identities and no source tombstones. Deletion emits tombstones. Parent completion/deletion cascades without a parent-ETag change on child creation; Operator adopted Google-style subtree semantics (ADR 014). Canonical integration pending |
+| G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Live moves carry children/grandchildren with stable identities and no source tombstones. Deletion emits tombstones. Parent completion/deletion cascades without a parent-ETag change on child creation; Operator adopted Google-style subtree semantics (ADR 014). Canonical parent-first moves and child-first lifecycle support, durable cross-binding dependencies, exact destination reads, native/Google stable-ID moves and immediate stale-ETag reconciliation now pass native and isolated PostgreSQL checks. Selective inbox integration and uncertain ordering recovery remain |
 | Authority/privacy | OAuth/local grant, owner isolation/revocation/triage rejection, genuine service roots, no sensitive invocation payloads | Shared-engine policy import creates no per-poll request/utterance; list/account/local/OAuth revocation, triage rejection and exact-effect admission covered. Native workflows, polling revocation and shared-write runner evidence pass; real provider acceptance remains |
 | Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Local v68 source advertises 114 tools; six new plus two changed definitions total 12,245 bytes within 4/6/24 KiB budgets. Bundle skill/host refresh remains |
 | Storage | Fresh/populated isolated PostgreSQL migrations, constraints/history/races, restart/drain and recovery | Fresh/empty roundtrip, retained revisions, shared-runner delivery and atomic reminder/competing replacement proofs pass at 20261106f6a7; populated narrowing refuses without data loss. Release-artifact upgrade/restart/drain remains |
@@ -156,3 +156,29 @@ Google truncates explicit completion timestamps to milliseconds. Projection and
 comparison now use that supported precision while canonical reported timestamps
 remain unchanged. A derived reminder-header edit also leaves independent canonical/
 Google title conflicts unresolved. Focused native/transport checks cover both fixes.
+
+### Subtree integration
+
+The standing Google-style subtree choice is now reflected in context, native
+previews and bounded commit receipts. Native parent completion/cancellation,
+retraction and list moves derive scoped descendant changes under the graph lock,
+preserving each Task/Item identity, audit trail and unrelated title/notes. Already
+completed children keep their recorded completion time. No recursive input is
+added. New subtasks added on Google follow the parent provider action.
+
+One native parent move carries the provider subtree; descendant queue entries
+read actual destination resources rather than issuing duplicate moves. A unique
+Google-side move between two admitted lists updates the existing canonical Task
+and binding generation. Detached, ambiguous or suspended identities do not
+become duplicate imports. Rejected stale writes retain an actual fresh read and
+re-admit the original immutable intent through the normal policy/conflict checks.
+A source GET 404 remains uncertain for a lost delete, since a move produces the
+same absence; an actual deletion acknowledgement/tombstone is required.
+
+[evidence/google-tasks-retirement/subtrees.json](../evidence/google-tasks-retirement/subtrees.json)
+records isolated PostgreSQL fresh/empty-roundtrip migrations, competing parent
+completion (exactly one commit), per-child versions, dependent provider delivery
+and retraction. The disposable database was removed. The provider gate passed
+122 cases and the native gate 268; this is implementation evidence, not deployment
+or activation. Inbound Calendar reminder reconciliation, remaining G3 exceptions,
+release validation and same-App activation still remain.

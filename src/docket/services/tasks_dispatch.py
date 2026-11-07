@@ -46,6 +46,15 @@ class TasksDispatchService:
             return answer("superseded", "task_projection_unavailable")
         if not binding.active or binding.detached or task.task_list_ref is None:
             return answer("superseded", "task_projection_detached")
+        from docket.models import GoogleTaskObservation
+
+        observation = (
+            self.session.get(GoogleTaskObservation, binding.observation_ref)
+            if binding.observation_ref
+            else None
+        )
+        if observation is not None and observation.fields.get("assignmentInfo"):
+            return answer("wait", "google_tasks_assigned_read_only")
         kind = operation.operation_type.removeprefix("tasks_")
         if task.canonical_status == "retracted" and kind != "delete":
             return answer("superseded", "task_retracted_before_dispatch")

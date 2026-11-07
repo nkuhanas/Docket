@@ -22,6 +22,8 @@ def lock_title_targets(session: Session, changes: list[Any]) -> None:
     task_types = {"task", "task_google_link", "task_sync_resolution", "task_list"}
     if any(change.object_type == "task_list" for change in changes):
         identity_lock(session, "task-list-default:" + read_operator())
+    if any(change.object_type in task_types for change in changes):
+        identity_lock(session, "task-graph:" + read_operator())
     task_refs = sorted(
         {
             change.object_ref
@@ -30,6 +32,11 @@ def lock_title_targets(session: Session, changes: list[Any]) -> None:
         }
     )
     extra_lists: set[str] = set()
+    from docket.services.task_subtrees import descendants
+
+    for change in changes:
+        if change.object_type == "task" and change.action != "create":
+            task_refs.extend(child.ref_id for child in descendants(session, change.object_ref))
     for change in changes:
         if change.object_type == "task_list":
             extra_lists.add(change.object_ref)

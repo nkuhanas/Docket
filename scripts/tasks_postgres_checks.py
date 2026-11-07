@@ -248,6 +248,59 @@ async def check_tasks(settings, factory, _principal):
         assert completed.get("disposition") == "committed", completed
         drain()
         assert all(row.snapshot.get("status") == "cancelled" for row in calendar.events.values())
+        # A named parent owns ordinary subtree support under one genuine request.
+        # PostgreSQL serializes the graph and retains every binding revision.
+        tree_refs = []
+        for index in range(3):
+            packet = await call("docket_get_tasks_context", {"refs": tree_refs[-1:]})
+            created = await call("docket_create_task", {
+                "context_id": packet["context_id"], "operation_id": "pg-tree-" + str(index),
+                "title": "Tree node " + str(index),
+                **({"parent_task_ref": tree_refs[-1]} if tree_refs
+                   else {"task_list_ref": list_ref}),
+            })
+            assert created.get("disposition") == "committed", created
+            with factory() as session:
+                tree_refs.append(session.scalar(select(Task.ref_id).where(
+                    Task.title == "Tree node " + str(index),
+                )))
+            drain()
+        packet = await call("docket_get_tasks_context", {"refs": [tree_refs[0]]})
+        previews = [await call("docket_update_task", {
+            "context_id": packet["context_id"], "operation_id": "pg-tree-complete-" + str(index),
+            "task_ref": tree_refs[0], "state": "completed", "preview": True,
+        }) for index in (1, 2)]
+        assert all(row.get("disposition") == "prepared" for row in previews), previews
+        barrier = Barrier(2)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(apply, previews))
+        assert sum(row.get("disposition") == "committed" for row in results) == 1, results
+        with factory() as session:
+            tree = list(session.scalars(select(Task).where(Task.ref_id.in_(tree_refs))))
+            assert {task.task_state for task in tree} == {"completed"}
+            assert {task.version for task in tree} == {2}
+            completion_ops = list(session.scalars(select(Operation).join(OperationTarget).where(
+                OperationTarget.canonical_target_ref.in_(tree_refs),
+                Operation.operation_type == "tasks_patch",
+            ).order_by(Operation.created_at)))
+            assert len(completion_ops) == 3
+            assert completion_ops[1].predecessor_operation_id == completion_ops[0].id
+            assert completion_ops[2].predecessor_operation_id == completion_ops[1].id
+        drain()
+        packet = await call("docket_get_context", {"refs": [tree_refs[0]]})
+        removed = await call("docket_retract_record", {
+            "context_id": packet["context_id"], "operation_id": "pg-tree-retract",
+            "target_ref": tree_refs[0],
+        })
+        assert removed.get("disposition") == "committed", removed
+        drain()
+        with factory() as session:
+            assert set(session.scalars(select(Task.canonical_status).where(
+                Task.ref_id.in_(tree_refs),
+            ))) == {"retracted"}
+            assert set(session.scalars(select(Operation.status).join(OperationTarget).where(
+                OperationTarget.canonical_target_ref.in_(tree_refs),
+            ))) == {"succeeded"}
         return {
             "task_storage_shape": "passed", "task_import_genuine_policy_root": "passed",
             "task_full_title_and_derived_item": "passed",
@@ -257,6 +310,8 @@ async def check_tasks(settings, factory, _principal):
             "task_reminder_atomic_queue_and_title_header": "passed",
             "task_reminder_concurrent_replacement": "one_commit",
             "task_reminder_completion_cancellation": "passed",
+            "task_subtree_concurrent_completion": "one_commit",
+            "task_subtree_dependent_delivery_and_retraction": "passed",
         }
     finally:
         settings.tasks_enabled, settings.interactive_agent_enabled = saved_enabled, saved_agent

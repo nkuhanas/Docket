@@ -89,6 +89,8 @@ class TasksContextService:
             "google_read_grant": read,
             "google_write_grant": full,
             "local_tasks": True,
+            "parent_actions": "Completing, deleting or moving a parent affects its current "
+            "subtree, including Google subtasks added since the last read.",
             "provider_methods": methods,
             "clock": "Google's native clock is opaque and API edits can clear it. "
             "Docket uses an AM/PM title header and a Calendar companion for exact alerts.",

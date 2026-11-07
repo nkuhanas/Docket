@@ -240,7 +240,10 @@ async def test_stale_conditional_write_retries_original_field_after_independent_
         )
         assert runner.run_due_once()
         with session_factory() as session:
-            assert "failed" in set(session.scalars(select(Operation.status)))
+            assert "pending" in set(session.scalars(select(Operation.status)))
+            # The rejected write remains in attempt history; a real fresh read
+            # re-admits the same intent without waiting for the next poll.
+            assert session.scalar(select(Task.description)) == "Independent Google notes"
         with session_factory.begin() as session:
             listing = session.scalar(select(GoogleTaskList))
             service = TaskSyncService(session, runner.settings)
@@ -318,7 +321,7 @@ async def test_interrupted_reconciliation_never_returns_uncertain_insert_to_exec
 @pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
 @pytest.mark.parametrize("list_inaccessible", [False, True])
 @pytest.mark.asyncio
-async def test_missing_task_confirmation_requires_accessible_collection(
+async def test_source_absence_cannot_confirm_delete_even_with_accessible_collection(
     session_factory,
     tasks_client,
     monkeypatch,
@@ -356,7 +359,7 @@ async def test_missing_task_confirmation_requires_accessible_collection(
         assert runner.reconcile_once()
         if list_inaccessible:
             provider.lists.clear()
-        now[0] += timedelta(seconds=2)
+        now[0] += timedelta(seconds=31)
         assert runner.reconcile_once()
         with session_factory() as session:
             deletion = session.scalar(
@@ -364,9 +367,7 @@ async def test_missing_task_confirmation_requires_accessible_collection(
                     Operation.operation_type == "tasks_delete",
                 )
             )
-            assert deletion.status == (
-                "reconciliation_required" if list_inaccessible else "succeeded"
-            )
+            assert deletion.status == "reconciliation_required"
 
 
 @pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
@@ -477,3 +478,147 @@ async def test_explicit_link_repairs_removed_marker_without_fabricating_original
         assert runner.run_due_once()
         assert next(iter(provider.tasks.values()))["title"] == "Continue normal work"
         assert sum(method == "POST" for method, _ in provider.calls) == 1
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.parametrize("moved_in_google", [False, True])
+@pytest.mark.asyncio
+async def test_parent_subtree_move_completion_and_retraction_preserve_identity(
+    session_factory,
+    tasks_client,
+    moved_in_google,
+    monkeypatch,
+):
+    async with tasks_client() as (call, runner, provider, _packet):
+        monkeypatch.setattr("docket.services.task_policy_authority.get_settings",
+                            lambda: runner.settings)
+        with session_factory.begin() as session:
+            source = session.scalar(select(GoogleTaskList))
+            source_ref, account_id = source.ref_id, source.account_id
+            destination = GoogleTaskList(
+                account_id=account_id,
+                operator_ref=get_settings().canonical_operator_ref,
+                provider_list_id="second-list",
+                title="Other tasks",
+            )
+            session.add(destination)
+            session.flush()
+            destination_ref = destination.ref_id
+        provider.seed_list("second-list", "Other tasks")
+        context = await call("docket_get_tasks_context", {})
+        result = await call(
+            "docket_configure_task_list",
+            {
+                "context_id": context["context_id"],
+                "operation_id": "second-list-policy",
+                "task_list_ref": destination_ref,
+                "mode": "two_way",
+                "is_default": True,
+            },
+        )
+        assert result.get("disposition") == "committed", result
+        refs = []
+        for index, title in enumerate(("Parent", "Child", "Grandchild")):
+            context = await call("docket_get_tasks_context", {"refs": refs[-1:]})
+            result = await call(
+                "docket_create_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "tree-" + str(index),
+                    "title": title,
+                    **({"parent_task_ref": refs[-1]} if refs else {"task_list_ref": source_ref}),
+                },
+            )
+            assert result.get("disposition") == "committed", result
+            assert runner.run_due_once()
+            with session_factory() as session:
+                task = session.scalar(select(Task).where(Task.title == title))
+                assert task.task_list_ref == source_ref  # Parent wins over the changed default.
+                refs.append(task.ref_id)
+        with session_factory() as session:
+            identities = {
+                row.task_ref: (row.provider_task_id, row.task_ref)
+                for row in session.scalars(select(TaskProviderBinding))
+            }
+        if moved_in_google:
+            remote = provider.get_task("synthetic-list", identities[refs[0]][0])
+            provider.move_task(
+                "synthetic-list",
+                remote.task_id,
+                etag=remote.etag,
+                destination_task_list_id="second-list",
+            )
+            for ref in refs:
+                remote = provider.get_task("second-list", identities[ref][0])
+                with session_factory.begin() as session:
+                    listing = session.get(GoogleTaskList, destination_ref)
+                    sync = TaskSyncService(session, runner.settings)
+                    observation = sync.observe(
+                        listing, remote, generation=uuid.uuid4(), read_started_at=datetime.now(UTC)
+                    )
+                    result = sync.reconcile(observation)
+                    assert result["state"] in {"reconciled", "unchanged"}, result
+        else:
+            context = await call("docket_get_tasks_context", {"refs": [refs[0], destination_ref]})
+            moved = await call(
+                "docket_update_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "move-tree",
+                    "task_ref": refs[0],
+                    "task_list_ref": destination_ref,
+                },
+            )
+            assert moved.get("disposition") == "committed", moved
+            for _ in range(3):
+                assert runner.run_due_once()
+        assert sum(url.endswith("/move") for _, url in provider.calls) == 1
+        assert {owner for owner, _ in provider.tasks} == {"second-list"}
+        with session_factory() as session:
+            assert {task.task_list_ref for task in session.scalars(select(Task))} == {
+                destination_ref
+            }
+            assert {
+                row.task_ref: (row.provider_task_id, row.task_ref)
+                for row in session.scalars(select(TaskProviderBinding))
+            } == identities
+            assert set(session.scalars(select(Operation.status))) == {"succeeded"}
+        context = await call("docket_get_tasks_context", {"refs": [refs[0]]})
+        completed = await call(
+            "docket_update_task",
+            {
+                "context_id": context["context_id"],
+                "operation_id": "complete-tree",
+                "task_ref": refs[0],
+                "state": "completed",
+                "title": "Finished parent",
+            },
+        )
+        assert completed.get("disposition") == "committed", completed
+        for _ in range(4):
+            assert runner.run_due_once()
+        with session_factory() as session:
+            tasks = list(session.scalars(select(Task)))
+            assert {task.task_state for task in tasks} == {"completed"}
+            assert {task.title for task in tasks} == {"Finished parent", "Child", "Grandchild"}
+            assert set(session.scalars(select(Operation.status))) == {"succeeded"}
+        # New, unobserved children are covered by the standing subtree policy.
+        root_id = identities[refs[0]][0]
+        late = provider.insert_task("second-list", {"title": "Added on Google"}, parent=root_id)
+        context = await call("docket_get_context", {"refs": [refs[0]]})
+        removed = await call(
+            "docket_retract_record",
+            {
+                "context_id": context["context_id"],
+                "operation_id": "retract-tree",
+                "target_ref": refs[0],
+            },
+        )
+        assert removed.get("disposition") == "committed", removed
+        for _ in range(10):
+            if not runner.run_due_once():
+                break
+        assert provider.tasks[("second-list", late.task_id)]["deleted"] is True
+        with session_factory() as session:
+            assert set(session.scalars(select(Task.canonical_status))) == {"retracted"}
+            assert set(session.scalars(select(Operation.status))) == {"succeeded"}

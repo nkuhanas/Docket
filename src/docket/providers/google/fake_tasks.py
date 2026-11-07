@@ -89,8 +89,20 @@ class FakeTasksProvider(GoogleTasksProvider):
                     "google_tasks_stale", "Google changed; reconcile before retrying."
                 )
             self.sequence += 1
+            subtree = {task_id}
+            while True:
+                found = {
+                    identifier
+                    for (owner, identifier), row in self.tasks.items()
+                    if owner == list_id and row.get("parent") in subtree
+                }
+                if found.issubset(subtree):
+                    break
+                subtree.update(found)
             if method == "DELETE":
                 document["deleted"] = True
+                for descendant in subtree - {task_id}:
+                    self.tasks[(list_id, descendant)]["deleted"] = True
             elif len(parts) > 3 and parts[3] == "move":
                 target_list = params.get("destinationTasklist", list_id)
                 if target_list not in self.lists:
@@ -98,10 +110,20 @@ class FakeTasksProvider(GoogleTasksProvider):
                 if target_list != list_id:
                     del self.tasks[key]
                     key = (target_list, task_id)
+                    for descendant in subtree - {task_id}:
+                        child = self.tasks.pop((list_id, descendant))
+                        child["etag"] = f'"fake-{self.sequence}-{descendant}"'
+                        self.tasks[(target_list, descendant)] = child
                 document["parent"] = params.get("parent")
                 document["position"] = params.get("previous", "")
             else:
                 document.update(deepcopy(fields or {}))
+                if document.get("status") == "completed":
+                    for descendant in subtree - {task_id}:
+                        child = self.tasks[(list_id, descendant)]
+                        if child.get("status") != "completed":
+                            child.update(status="completed", completed=document["completed"])
+                        child["etag"] = f'"fake-{self.sequence}-{descendant}"'
         document["etag"] = f'"fake-{self.sequence}"'
         document["updated"] = datetime.now(UTC).isoformat()
         self.tasks[key] = deepcopy(document)

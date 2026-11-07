@@ -40,10 +40,15 @@ class TaskFieldService:
         fields = spec.model_dump(exclude_unset=current is not None)
         after = fields.pop("after_task_ref", None)
         list_ref = fields.get("task_list_ref", current.task_list_ref if current else None)
+        parent_ref = fields.get("parent_task_ref", current.parent_task_ref if current else None)
+        if current is None and parent_ref and not list_ref:
+            list_ref = self.related_task(parent_ref).task_list_ref
+            fields["task_list_ref"] = list_ref
         if list_ref:
             self.list(list_ref)
-        parent_ref = fields.get("parent_task_ref", current.parent_task_ref if current else None)
-        if parent_ref:
+        if parent_ref and (current is None or {"parent_task_ref", "task_list_ref"}.intersection(
+            fields,
+        )):
             parent = self.related_task(parent_ref)
             if parent.task_list_ref != list_ref:
                 raise DocketError(
@@ -73,23 +78,6 @@ class TaskFieldService:
                     code="task_sibling_mismatch",
                     message="Select a sibling in the same list and parent.",
                     details={"field": "after_task_ref"},
-                )
-        if current is not None and list_ref != current.task_list_ref:
-            children = list(
-                self.session.scalars(
-                    select(Task.ref_id)
-                    .where(
-                        Task.parent_task_ref == current.ref_id,
-                        Task.canonical_status == "active",
-                    )
-                    .limit(11)
-                )
-            )
-            if children:
-                raise DocketError(
-                    code="task_children_require_move",
-                    message="Move the known child tasks together.",
-                    details={"child_task_refs": children[:10], "more": len(children) > 10},
                 )
         if "remind_at" in fields:
             if fields["remind_at"] is None:

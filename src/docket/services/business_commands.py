@@ -217,11 +217,14 @@ class BusinessCommandService(NativeCommandService):
                 mutation = definition.mutation.model_validate(data)
             except ValidationError as exc:
                 raise public_validation_error(exc) from exc
-            return mutation_plan(
+            plan = mutation_plan(
                 context,
                 [mutation_input_json(mutation, preserve_explicit_nulls=True)],
                 command_name,
             )
+            if definition.object_type == "task" and definition.action == "retract":
+                plan["command_preview"] = {"task_scope": "current_subtree"}
+            return plan
 
         return self.execute(
             command=command_name,

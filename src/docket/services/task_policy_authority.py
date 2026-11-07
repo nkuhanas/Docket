@@ -184,7 +184,6 @@ class TaskPolicyAuthority:
                     select(TaskProviderBinding)
                     .where(
                         TaskProviderBinding.task_ref == change.object_ref,
-                        TaskProviderBinding.task_list_ref == listing.ref_id,
                         TaskProviderBinding.provider_task_id == observation.provider_task_id,
                         TaskProviderBinding.active.is_(True),
                         TaskProviderBinding.detached.is_(False),
@@ -195,6 +194,18 @@ class TaskPolicyAuthority:
                     raise self.denied()
                 if effect.expected_binding_version != binding.version:
                     raise self.denied()
+                if binding.task_list_ref != listing.ref_id:
+                    source = self.session.get(GoogleTaskList, binding.task_list_ref)
+                    if (
+                        change.action != "update"
+                        or "task_list_ref" not in values.model_fields_set
+                        or values.task_list_ref != listing.ref_id
+                        or source is None
+                        or source.policy_ref is None
+                        or source.account_id != listing.account_id
+                    ):
+                        raise self.denied()
+                    self.policy(source.policy_ref, lock=lock)
                 if change.action == "retract":
                     if not policy.propagate_google_deletion or not observation.fields.get(
                         "deleted"
@@ -209,6 +220,7 @@ class TaskPolicyAuthority:
                         "completed_at",
                         "canonical_status",
                         "parent_task_ref",
+                        "task_list_ref",
                     }
                 ):
                     raise self.denied()

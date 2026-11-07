@@ -8,7 +8,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 
 from docket.domain.errors import DocketError
-from docket.models import GoogleTaskList, NativeContext
+from docket.models import GoogleTaskList, NativeContext, Task
 from docket.schemas.authority import (
     CanonicalEventCancel,
     CanonicalEventModify,
@@ -278,7 +278,12 @@ class RoutineCommandService(NativeCommandService):
                 }
             }
             if create and "task_list_ref" not in values:
-                default = self.session.scalar(select(GoogleTaskList).where(
+                parent = self.session.scalar(select(Task).where(
+                    Task.ref_id == values.get("parent_task_ref"),
+                )) if values.get("parent_task_ref") else None
+                default = (self.session.get(GoogleTaskList, parent.task_list_ref)
+                           if parent is not None and parent.task_list_ref else None)
+                default = default or self.session.scalar(select(GoogleTaskList).where(
                     GoogleTaskList.operator_ref == read_operator(),
                     GoogleTaskList.is_default.is_(True), GoogleTaskList.policy_mode == "two_way",
                 ))
@@ -426,6 +431,10 @@ class RoutineCommandService(NativeCommandService):
                 binding_ref = sync.get("binding_ref")
                 if binding_ref in context.versions:
                     plan["expected_versions"][binding_ref] = context.versions[binding_ref]
+                if (payload.get("task_state") in {"completed", "cancelled"}
+                        or "task_list_ref" in payload
+                        or payload.get("canonical_status") == "retracted"):
+                    plan["command_preview"] = {"task_scope": "current_subtree"}
             return plan
 
         return self.execute(

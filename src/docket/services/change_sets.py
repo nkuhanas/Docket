@@ -137,6 +137,7 @@ class ChangeSetApplicationReceipt:
     financial_records: list[dict[str, Any]] = field(default_factory=list)
     workload_reviews: list[dict[str, Any]] = field(default_factory=list)
     calendar_views: list[dict[str, Any]] = field(default_factory=list)
+    task_subtrees: list[dict[str, Any]] = field(default_factory=list)
 
     def add_refs(self, refs: list[str]) -> None:
         for ref_id in refs:
@@ -164,6 +165,7 @@ class ChangeSetApplicationReceipt:
             "effects": [effect.projection() for effect in self.effects[:limit]],
             "effect_count": len(self.effects),
             "effect_counts": self._counts(self.effects, "mutation_type"),
+            "task_subtrees": self.task_subtrees[:limit],
             "effects_truncated": len(self.effects) > limit,
             "provider_operations": [
                 operation.projection() for operation in self.provider_operations[:limit]
@@ -186,6 +188,7 @@ class ChangeSetApplicationReceipt:
             **self.work_projection(limit=limit),
             "ok": True,
             "disposition": "committed",
+            "task_subtrees": self.task_subtrees[:limit],
             "changeset_ref": changeset_ref,
             "semantic_request_ref": semantic_request_ref,
             "canonical_disposition": "committed",
@@ -663,6 +666,19 @@ class ChangeSetService:
             refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             receipt.add_refs(refs)
+            if change.object_type == "task" and change.action != "create":
+                values = _change_payload(change)
+                if (change.action == "retract"
+                        or values.get("task_state") in {"completed", "cancelled"}
+                        or "task_list_ref" in values
+                        or values.get("canonical_status") == "retracted"):
+                    task_intent = self.session.get(IntentSession, changeset.intent_session_id)
+                    if task_intent is None or not task_intent.source_policy_effect_ref:
+                        receipt.task_subtrees.append({
+                            "root_ref": change.object_ref, "scope": "current_subtree",
+                            "known_descendant_count": max(0, len(refs) - 1),
+                            "includes_new_google_subtasks": True,
+                        })
             if change.object_type == "work_calendar_projection":
                 from docket.services.work_calendar import WorkCalendarService
 

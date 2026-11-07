@@ -142,38 +142,72 @@ class TasksExecutionService:
         claim, provider = prepared
         call = claim.parameters["dispatch"]
         kind = claim.operation_type.removeprefix("tasks_")
-        if kind == "insert":
-            result = provider.insert_task(
-                call["source_list_id"],
-                call["fields"],
-                parent=call["parent_id"],
-                previous=call["previous_id"],
-            )
-        elif kind == "patch":
-            result = provider.patch_task(
-                call["source_list_id"],
-                call["task_id"],
-                call["fields"],
-                etag=call["etag"],
-            )
-        elif kind == "move":
-            result = provider.move_task(
-                call["source_list_id"],
-                call["task_id"],
-                etag=call["etag"],
-                destination_task_list_id=(
-                    call["destination_list_id"]
-                    if call["destination_list_id"] != call["source_list_id"]
-                    else None
-                ),
-                parent=call["parent_id"],
-                previous=call["previous_id"],
-            )
-        else:
-            assert kind == "delete"
-            provider.delete_task(call["source_list_id"], call["task_id"], etag=call["etag"])
-            result = None
-        self.success(claim, result)
+        result: GoogleTask | None
+        try:
+            if kind == "insert":
+                result = provider.insert_task(
+                    call["source_list_id"],
+                    call["fields"],
+                    parent=call["parent_id"],
+                    previous=call["previous_id"],
+                )
+            elif kind == "patch":
+                result = provider.patch_task(
+                    call["source_list_id"],
+                    call["task_id"],
+                    call["fields"],
+                    etag=call["etag"],
+                )
+            elif kind == "move" and claim.parameters.get("carried_by_task_ref"):
+                result = provider.get_task(call["destination_list_id"], call["task_id"])
+                if result is None or not self.matches(result, claim.parameters):
+                    raise TasksProviderError(
+                        "google_tasks_outcome_changed",
+                        "Reconcile the moved subtree's actual membership.",
+                    )
+            elif kind == "move":
+                result = provider.move_task(
+                    call["source_list_id"],
+                    call["task_id"],
+                    etag=call["etag"],
+                    destination_task_list_id=(
+                        call["destination_list_id"]
+                        if call["destination_list_id"] != call["source_list_id"]
+                        else None
+                    ),
+                    parent=call["parent_id"],
+                    previous=call["previous_id"],
+                )
+            else:
+                assert kind == "delete"
+                provider.delete_task(call["source_list_id"], call["task_id"], etag=call["etag"])
+                result = None
+            self.success(claim, result)
+
+        except TasksProviderError as exc:
+            if exc.code != "google_tasks_stale":
+                raise
+            self.runner._finish_error(claim, exc)
+            # A parent transition may change child ETags. Retain a genuine fresh
+            # read and retry the same immutable intent through normal admission.
+            result = provider.get_task(call["source_list_id"], call["task_id"])
+            if result is not None:
+                with self.runner.session_factory.begin() as session:
+                    lock_task_rows(session, [claim.parameters["task_ref"]])
+                    listing = session.scalar(
+                        select(GoogleTaskList).join(
+                            Operation, Operation.account_id == GoogleTaskList.account_id,
+                        ).where(
+                            GoogleTaskList.provider_list_id == call["source_list_id"],
+                            Operation.id == claim.operation_id,
+                        )
+                    )
+                    if listing is not None:
+                        sync = TaskSyncService(session, self.runner.settings)
+                        observation = sync.observe(
+                            listing, result, generation=uuid.uuid4(), read_started_at=utc_now()
+                        )
+                        sync.reconcile(observation)
 
     def success(self, claim: ClaimedOperation, result: GoogleTask | None) -> None:
         with self.runner.session_factory.begin() as session:
@@ -230,7 +264,7 @@ class TasksExecutionService:
                 ):
                     # Keep the actual response without rolling the binding back
                     # over a newer observed version or explicit field decision.
-                    matched = self.matches(result, params)
+                    matched = self.matches(result, params, acknowledged=True)
                     operation.status = target.status = (
                         "succeeded" if matched else "reconciliation_required"
                     )
@@ -250,9 +284,14 @@ class TasksExecutionService:
                     )
                     return
                 values, marker = observed_values(
-                    session, observation, binding,
-                    title_prefix=(params.get("title_prefix", "")
-                                  if "title" in params["projected_fields"] else None),
+                    session,
+                    observation,
+                    binding,
+                    title_prefix=(
+                        params.get("title_prefix", "")
+                        if "title" in params["projected_fields"]
+                        else None
+                    ),
                 )
                 existing = TaskBindingService(session).identity(list_ref, result.task_id)
                 baseline = deepcopy(binding.baseline)
@@ -300,7 +339,12 @@ class TasksExecutionService:
             )
 
     @staticmethod
-    def matches(task: GoogleTask, parameters: dict[str, Any]) -> bool:
+    def matches(
+        task: GoogleTask,
+        parameters: dict[str, Any],
+        *,
+        acknowledged: bool = False,
+    ) -> bool:
         if not transport_fields_match(
             task.fields, parameters["dispatch"]["fields"], parameters["correlation"]
         ):
@@ -309,7 +353,7 @@ class TasksExecutionService:
             "parent_id"
         ) != task.fields.get("parent"):
             return False
-        if parameters.get("after_task_ref"):
+        if parameters.get("after_task_ref") and not acknowledged:
             # An opaque position cannot establish the requested sibling relation.
             # A lost move acknowledgement remains uncertain until repaired.
             return False
@@ -410,24 +454,14 @@ class TasksExecutionService:
                 self.runner._clear_lease(operation, target)
             return
         list_id = call["destination_list_id"] if kind == "move" else call["source_list_id"]
-        if kind == "delete" and recovery.get("missing_task"):
-            # A task GET 404 also occurs when its collection is inaccessible.
-            # Positively verify the same collection before confirming absence.
-            page = provider.list_tasks(list_id)
-            if any(
-                task.task_id == call["task_id"] and not task.fields.get("deleted")
-                for task in page.tasks
-            ):
-                self._checkpoint(claim, {}, "google_tasks_outcome_changed")
-            else:
-                self.success(claim, None)
-            return
         result = provider.get_task(list_id, call["task_id"])
         if kind == "delete" and result is None:
+            # A cross-list move produces 404 in its source without a tombstone.
+            # Source absence cannot prove a lost DELETE succeeded.
             self._checkpoint(
                 claim,
                 {"missing_task": True, "observed_at": utc_now().isoformat()},
-                "google_tasks_verify_collection",
+                "google_tasks_deletion_uncertain",
             )
         elif kind == "delete" and result is not None and result.fields.get("deleted"):
             self.success(claim, None)

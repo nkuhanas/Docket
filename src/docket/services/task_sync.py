@@ -22,6 +22,7 @@ from docket.models import (
     GoogleTaskList,
     GoogleTaskObservation,
     IntentSession,
+    ProviderAccount,
     Task,
     TaskPolicyEffect,
     TaskProviderBinding,
@@ -60,29 +61,44 @@ class TaskSyncService:
     ) -> GoogleTaskObservation:
         # Identical ordinary polls share evidence. A forced fresh read can carry
         # an explicit binding-version fence after an overlapping delivery.
-        source_hash = sha256_json({
-            "etag": task.etag,
-            "fields": task.fields,
-            "read_after_binding_version": read_after_binding_version,
-        })
-        existing = self.session.scalar(select(GoogleTaskObservation).where(
-            GoogleTaskObservation.task_list_ref == listing.ref_id,
-            GoogleTaskObservation.provider_task_id == task.task_id,
-            GoogleTaskObservation.source_hash == source_hash,
-        ))
+        source_hash = sha256_json(
+            {
+                "etag": task.etag,
+                "fields": task.fields,
+                "read_after_binding_version": read_after_binding_version,
+            }
+        )
+        existing = self.session.scalar(
+            select(GoogleTaskObservation).where(
+                GoogleTaskObservation.task_list_ref == listing.ref_id,
+                GoogleTaskObservation.provider_task_id == task.task_id,
+                GoogleTaskObservation.source_hash == source_hash,
+            )
+        )
         if existing is not None:
             binding = self.bindings.identity(listing.ref_id, task.task_id)
             previous_at = binding.observed_at if binding is not None else None
-            if (binding is None or previous_at is None or binding.provider_etag == task.etag
-                    or read_started_at.replace(tzinfo=read_started_at.tzinfo or UTC)
-                    < previous_at.replace(tzinfo=previous_at.tzinfo or UTC)):
+            if (
+                binding is None
+                or previous_at is None
+                or binding.provider_etag == task.etag
+                or read_started_at.replace(tzinfo=read_started_at.tzinfo or UTC)
+                < previous_at.replace(tzinfo=previous_at.tzinfo or UTC)
+            ):
                 return existing
             # This is a genuinely fresh read of an older provider version after a
             # newer delivery, rather than reuse of its original evidence time.
-            return self.observe(
-                listing, task, generation=generation, read_started_at=read_started_at,
-                read_after_binding_version=binding.version,
-            ) if read_after_binding_version is None else existing
+            return (
+                self.observe(
+                    listing,
+                    task,
+                    generation=generation,
+                    read_started_at=read_started_at,
+                    read_after_binding_version=binding.version,
+                )
+                if read_after_binding_version is None
+                else existing
+            )
         row = GoogleTaskObservation(
             task_list_ref=listing.ref_id,
             provider_task_id=task.task_id,
@@ -105,22 +121,30 @@ class TaskSyncService:
         fields: list[str],
         google: dict[str, Any],
     ) -> TaskSyncConflict:
-        source_hash = sha256_json({
-            "observation": observation.ref_id,
-            "canonical_version": task.version,
-            "baseline": binding.baseline,
-            "fields": sorted(fields),
-        })
-        row = self.session.scalar(select(TaskSyncConflict).where(
-            TaskSyncConflict.binding_ref == binding.ref_id,
-            TaskSyncConflict.source_hash == source_hash,
-        ))
+        source_hash = sha256_json(
+            {
+                "observation": observation.ref_id,
+                "canonical_version": task.version,
+                "baseline": binding.baseline,
+                "fields": sorted(fields),
+            }
+        )
+        row = self.session.scalar(
+            select(TaskSyncConflict).where(
+                TaskSyncConflict.binding_ref == binding.ref_id,
+                TaskSyncConflict.source_hash == source_hash,
+            )
+        )
         if row is None:
             row = TaskSyncConflict(
-                binding_ref=binding.ref_id, observation_ref=observation.ref_id,
-                source_hash=source_hash, canonical_version=task.version,
-                baseline=deepcopy(binding.baseline), local_values=canonical_values(task),
-                google_values=deepcopy(google), fields=sorted(fields),
+                binding_ref=binding.ref_id,
+                observation_ref=observation.ref_id,
+                source_hash=source_hash,
+                canonical_version=task.version,
+                baseline=deepcopy(binding.baseline),
+                local_values=canonical_values(task),
+                google_values=deepcopy(google),
+                fields=sorted(fields),
             )
             self.session.add(row)
             self.session.flush()
@@ -141,10 +165,19 @@ class TaskSyncService:
         assert listing.policy_ref is not None
         effect_ref = new_public_ref("teff")
         basis = [effect_ref, listing.policy_ref, observation.ref_id]
+        if binding is not None and binding.task_list_ref != listing.ref_id:
+            source = self.session.get(GoogleTaskList, binding.task_list_ref)
+            if source is not None and source.policy_ref:
+                basis.append(source.policy_ref)
         mutation: dict[str, Any] = {
-            "mutation_type": {"create": "task_create", "update": "task_modify",
-                              "retract": "task_retract"}[action],
-            "change_id": "observed-task", "action": action, "object_type": "task",
+            "mutation_type": {
+                "create": "task_create",
+                "update": "task_modify",
+                "retract": "task_retract",
+            }[action],
+            "change_id": "observed-task",
+            "action": action,
+            "object_type": "task",
             "affected_fields": list(values) if action != "retract" else ["canonical_status"],
             "basis_refs": basis,
         }
@@ -152,38 +185,55 @@ class TaskSyncService:
             mutation["object_ref"] = task.ref_id
         if action != "retract":
             mutation["create_spec" if action == "create" else "payload"] = values
-        content = ChangeSetContent.model_validate({
-            "basis_refs": basis, "tracked_context_changes": [mutation],
-            "expected_versions": {task.ref_id: task.version} if task else {},
-        })
+        content = ChangeSetContent.model_validate(
+            {
+                "basis_refs": basis,
+                "tracked_context_changes": [mutation],
+                "expected_versions": {task.ref_id: task.version} if task else {},
+            }
+        )
         payload = _content_payload(content)
         effect = TaskPolicyEffect(
-            ref_id=effect_ref, policy_ref=listing.policy_ref, observation_ref=observation.ref_id,
-            effect_hash=sha256_json(payload), content=payload, planner_version=PLANNER_VERSION,
+            ref_id=effect_ref,
+            policy_ref=listing.policy_ref,
+            observation_ref=observation.ref_id,
+            effect_hash=sha256_json(payload),
+            content=payload,
+            planner_version=PLANNER_VERSION,
             expected_binding_version=binding.version if binding else None,
         )
         self.session.add(effect)
         self.session.flush()
         intent = IntentSession(
             conversation_ref="task-sync:" + listing.ref_id,
-            source_policy_effect_ref=effect.ref_id, semantic_state="ready",
+            source_policy_effect_ref=effect.ref_id,
+            semantic_state="ready",
         )
         self.session.add(intent)
         self.session.flush()
         engine = InteractiveAuthorityService(self.session).changesets
-        prepared, _ = engine.prepare(ChangeSetPrepare(
-            intent_session_ref=intent.ref_id, expected_session_version=intent.version,
-            idempotency_key="task-sync:" + effect.ref_id, content=content,
-        ))
+        prepared, _ = engine.prepare(
+            ChangeSetPrepare(
+                intent_session_ref=intent.ref_id,
+                expected_session_version=intent.version,
+                idempotency_key="task-sync:" + effect.ref_id,
+                content=content,
+            )
+        )
         if prepared.state != "validated":
             raise DocketError(
                 code="task_import_validation_failed",
                 message="The observed task could not be committed; its evidence is retained.",
+                details={"reasons": [error["code"] for error in prepared.validation_errors]},
             )
-        committed, receipt = engine.commit(ChangeSetCommit(
-            changeset_ref=prepared.ref_id, expected_version=prepared.version,
-            idempotency_key=prepared.idempotency_key, authority_policy_effect_ref=effect.ref_id,
-        ))
+        committed, receipt = engine.commit(
+            ChangeSetCommit(
+                changeset_ref=prepared.ref_id,
+                expected_version=prepared.version,
+                idempotency_key=prepared.idempotency_key,
+                authority_policy_effect_ref=effect.ref_id,
+            )
+        )
         if task is None:
             ref = next(ref for ref in receipt.affected_refs if ref.startswith("task_"))
             task = self.session.scalar(select(Task).where(Task.ref_id == ref))
@@ -203,43 +253,127 @@ class TaskSyncService:
         # A concurrent move/detachment/import may have completed while waiting
         # for the graph lock. Never attach an old list observation to its new head.
         binding = self.bindings.identity(listing.ref_id, observation.provider_task_id)
-        if binding is None and self.bindings.previous_identity(
-            listing.ref_id, observation.provider_task_id,
-        ) is not None:
+        if (
+            binding is None
+            and self.bindings.previous_identity(
+                listing.ref_id,
+                observation.provider_task_id,
+            )
+            is not None
+        ):
             return {"state": "previous_identity", "observation_ref": observation.ref_id}
         if listing.policy_mode != "two_way":
             return {"state": "observed", "observation_ref": observation.ref_id}
         if binding is not None and (binding.detached or not binding.active):
-            return {"state": "detached" if binding.detached else "inactive",
-                    "observation_ref": observation.ref_id}
+            return {
+                "state": "detached" if binding.detached else "inactive",
+                "observation_ref": observation.ref_id,
+            }
         assert listing.policy_ref is not None
         TaskPolicyAuthority(self.session, self.settings).policy(listing.policy_ref, lock=True)
         if observation.fields.get("assignmentInfo"):
             return {"state": "assigned_read_only", "observation_ref": observation.ref_id}
         if binding is None:
+            # Native Google moves preserve IDs and emit no source tombstone.
+            # A unique known identity in this account must never be re-imported
+            # as a second canonical Task, even when its old policy is suspended.
+            known_bindings = list(
+                self.session.scalars(
+                    select(TaskProviderBinding)
+                    .join(
+                        GoogleTaskList,
+                        GoogleTaskList.ref_id == TaskProviderBinding.task_list_ref,
+                    )
+                    .join(ProviderAccount, ProviderAccount.id == GoogleTaskList.account_id)
+                    .where(
+                        GoogleTaskList.account_id == listing.account_id,
+                        TaskProviderBinding.provider_task_id == observation.provider_task_id,
+                    )
+                    .limit(2)
+                )
+            )
+            if known_bindings:
+                if (len(known_bindings) != 1 or not known_bindings[0].active
+                        or known_bindings[0].detached):
+                    return {
+                        "state": "known_identity_unavailable",
+                        "observation_ref": observation.ref_id,
+                    }
+                moved = known_bindings[0]
+                source = self.session.get(GoogleTaskList, moved.task_list_ref)
+                if source is None or source.policy_ref is None:
+                    return {"state": "move_policy_suspended", "observation_ref": observation.ref_id}
+                try:
+                    TaskPolicyAuthority(self.session, self.settings).policy(source.policy_ref)
+                except DocketError:
+                    return {"state": "move_policy_suspended", "observation_ref": observation.ref_id}
+                lock_task_rows(
+                    self.session, [moved.task_ref], lists=[source.ref_id, listing.ref_id]
+                )
+                task = self.session.scalar(select(Task).where(Task.ref_id == moved.task_ref))
+                assert task is not None
+                if task.task_list_ref not in {source.ref_id, listing.ref_id}:
+                    self.conflict(
+                        moved, observation, task, ["location"], {"location": listing.ref_id}
+                    )
+                    return {
+                        "state": "conflict",
+                        "conflict_fields": ["location"],
+                        "observation_ref": observation.ref_id,
+                        "task_ref": task.ref_id,
+                    }
+                if observation.fields.get("deleted"):
+                    return {"state": "unlinked_tombstone", "observation_ref": observation.ref_id}
+                google, _ = observed_values(self.session, observation, moved)
+                if task.task_list_ref != listing.ref_id:
+                    self._apply(
+                        listing,
+                        observation,
+                        "update",
+                        {
+                            "task_list_ref": listing.ref_id,
+                            "parent_task_ref": google["parent"],
+                        },
+                        task=task,
+                        binding=moved,
+                    )
+                moved.task_list_ref = listing.ref_id
+                moved.generation += 1
+                self.bindings.retain(
+                    moved, [observation.ref_id, source.policy_ref, listing.policy_ref]
+                )
+                binding = moved
+        if binding is None:
             raw_notes = observation.fields.get("notes")
             correlation = creation_correlation(raw_notes) if isinstance(raw_notes, str) else None
             if correlation:
-                pending = self.session.scalar(select(TaskProviderBinding).where(
-                    TaskProviderBinding.task_list_ref == listing.ref_id,
-                    TaskProviderBinding.provider_task_id.is_(None),
-                    TaskProviderBinding.correlation == correlation,
-                ))
+                pending = self.session.scalar(
+                    select(TaskProviderBinding).where(
+                        TaskProviderBinding.task_list_ref == listing.ref_id,
+                        TaskProviderBinding.provider_task_id.is_(None),
+                        TaskProviderBinding.correlation == correlation,
+                    )
+                )
                 if pending is not None:
                     # A changed resource or copied marker cannot resolve an
                     # uncertain creation. It also must not manufacture a second
                     # canonical Task while the original outcome is being checked.
-                    return {"state": "creation_reconciliation_pending",
-                            "binding_ref": pending.ref_id,
-                            "observation_ref": observation.ref_id}
+                    return {
+                        "state": "creation_reconciliation_pending",
+                        "binding_ref": pending.ref_id,
+                        "observation_ref": observation.ref_id,
+                    }
             from docket.models import Operation, OperationTarget
 
             candidates = self.session.execute(
-                select(OperationTarget).join(Operation).join(
+                select(OperationTarget)
+                .join(Operation)
+                .join(
                     TaskProviderBinding,
                     TaskProviderBinding.ref_id
                     == OperationTarget.parameters["binding_ref"].as_string(),
-                ).where(
+                )
+                .where(
                     Operation.operation_type == "tasks_insert",
                     Operation.status.in_({"running", "reconciliation_required"}),
                     OperationTarget.parameters["task_list_ref"].as_string() == listing.ref_id,
@@ -250,56 +384,89 @@ class TaskSyncService:
                 call = candidate.parameters.get("dispatch")
                 if not isinstance(call, dict):
                     continue
-                if (transport_fields_match(observation.fields, call["fields"],
-                                           candidate.parameters["correlation"])
-                        and observation.fields.get("parent") == call.get("parent_id")):
-                    return {"state": "creation_identity_ambiguous",
-                            "binding_ref": candidate.parameters["binding_ref"],
-                            "observation_ref": observation.ref_id}
+                if transport_fields_match(
+                    observation.fields, call["fields"], candidate.parameters["correlation"]
+                ) and observation.fields.get("parent") == call.get("parent_id"):
+                    return {
+                        "state": "creation_identity_ambiguous",
+                        "binding_ref": candidate.parameters["binding_ref"],
+                        "observation_ref": observation.ref_id,
+                    }
         if binding is not None:
             previous_at = binding.observed_at
             started = observation.read_started_at or observation.observed_at
-            if (previous_at is not None
-                    and started.replace(tzinfo=started.tzinfo or UTC)
-                    < previous_at.replace(tzinfo=previous_at.tzinfo or UTC)
-                    and observation.provider_etag != binding.provider_etag
-                    and observation.read_after_binding_version != binding.version):
+            if (
+                previous_at is not None
+                and started.replace(tzinfo=started.tzinfo or UTC)
+                < previous_at.replace(tzinfo=previous_at.tzinfo or UTC)
+                and observation.provider_etag != binding.provider_etag
+                and observation.read_after_binding_version != binding.version
+            ):
                 return {"state": "fresh_read_required", "binding_ref": binding.ref_id}
         previous = (
-            deepcopy(binding.baseline), deepcopy(binding.provider_snapshot),
-            binding.observation_ref, binding.provider_etag, binding.marker_present,
-            binding.canonical_version,
-            binding.provider_updated_at.replace(tzinfo=binding.provider_updated_at.tzinfo or UTC)
-            if binding.provider_updated_at else None,
-        ) if binding is not None else None
+            (
+                deepcopy(binding.baseline),
+                deepcopy(binding.provider_snapshot),
+                binding.observation_ref,
+                binding.provider_etag,
+                binding.marker_present,
+                binding.canonical_version,
+                binding.provider_updated_at.replace(
+                    tzinfo=binding.provider_updated_at.tzinfo or UTC
+                )
+                if binding.provider_updated_at
+                else None,
+            )
+            if binding is not None
+            else None
+        )
         google, marker = observed_values(self.session, observation, binding)
         if binding is not None and google["deletion"]:
             from docket.models import Operation, OperationTarget
 
-            pending_move = self.session.scalar(select(Operation).join(OperationTarget).where(
-                OperationTarget.canonical_target_ref == binding.task_ref,
-                Operation.operation_type == "tasks_move",
-                Operation.status.in_({"pending", "running", "reconciliation_required"}),
-                OperationTarget.parameters["binding_ref"].as_string() == binding.ref_id,
-            ).limit(1))
+            pending_move = self.session.scalar(
+                select(Operation)
+                .join(OperationTarget)
+                .where(
+                    OperationTarget.canonical_target_ref == binding.task_ref,
+                    Operation.operation_type == "tasks_move",
+                    Operation.status.in_({"pending", "running", "reconciliation_required"}),
+                    OperationTarget.parameters["binding_ref"].as_string() == binding.ref_id,
+                )
+                .limit(1)
+            )
             if pending_move is not None:
-                return {"state": "move_delivery_pending", "binding_ref": binding.ref_id,
-                        "observation_ref": observation.ref_id}
+                return {
+                    "state": "move_delivery_pending",
+                    "binding_ref": binding.ref_id,
+                    "observation_ref": observation.ref_id,
+                }
         if binding is None:
             if google["deletion"]:
                 return {"state": "unlinked_tombstone", "observation_ref": observation.ref_id}
             task, changeset = self._apply(
-                listing, observation, "create",
+                listing,
+                observation,
+                "create",
                 {"task_list_ref": listing.ref_id, **task_patch(google)},
             )
             binding = TaskProviderBinding(
-                task_ref=task.ref_id, task_list_ref=listing.ref_id,
-                provider_task_id=observation.provider_task_id, canonical_version=task.version,
-                correlation=uuid.uuid4().hex, created_by_changeset_ref=changeset.ref_id,
-                baseline={key: deepcopy(value) for key, value in google.items()
-                          if key != "transport_title_prefix"},
-                provider_snapshot=deepcopy(google), limitations={},
-                generation=1, active=True, detached=False,
+                task_ref=task.ref_id,
+                task_list_ref=listing.ref_id,
+                provider_task_id=observation.provider_task_id,
+                canonical_version=task.version,
+                correlation=uuid.uuid4().hex,
+                created_by_changeset_ref=changeset.ref_id,
+                baseline={
+                    key: deepcopy(value)
+                    for key, value in google.items()
+                    if key != "transport_title_prefix"
+                },
+                provider_snapshot=deepcopy(google),
+                limitations={},
+                generation=1,
+                active=True,
+                detached=False,
             )
             fields: list[str] = []
         else:
@@ -307,13 +474,19 @@ class TaskSyncService:
             assert found_task is not None
             task = found_task
             local = canonical_values(task)
-            merged = merge_fields(binding.baseline, local, google, binding.provider_snapshot,
-                                  limited=set(binding.limitations))
+            merged = merge_fields(
+                binding.baseline,
+                local,
+                google,
+                binding.provider_snapshot,
+                limited=set(binding.limitations),
+            )
             fields = merged.conflicts
             if google["deletion"] and not local["deletion"]:
                 # A provider deletion never erases independent local edits.
                 if binding.baseline.get("deletion") is True or any(
-                    local.get(key) != value for key, value in binding.baseline.items()
+                    local.get(key) != value
+                    for key, value in binding.baseline.items()
                     if key != "deletion"
                 ):
                     fields = sorted(set(fields) | {"deletion"})
@@ -323,7 +496,12 @@ class TaskSyncService:
                         merged.baseline["deletion"] = binding.baseline["deletion"]
                 else:
                     task, _ = self._apply(
-                        listing, observation, "retract", {}, task=task, binding=binding,
+                        listing,
+                        observation,
+                        "retract",
+                        {},
+                        task=task,
+                        binding=binding,
                     )
             elif merged.inbound:
                 incoming = dict(merged.inbound)
@@ -332,7 +510,12 @@ class TaskSyncService:
                 patch = task_patch(incoming, task)
                 if patch:
                     task, _ = self._apply(
-                        listing, observation, "update", patch, task=task, binding=binding,
+                        listing,
+                        observation,
+                        "update",
+                        patch,
+                        task=task,
+                        binding=binding,
                     )
             if fields:
                 self.conflict(binding, observation, task, fields, google)
@@ -347,10 +530,15 @@ class TaskSyncService:
                 binding.provider_updated_at = instant(raw_updated)
         binding.canonical_version = task.version
         current = (
-            binding.baseline, binding.provider_snapshot, binding.observation_ref,
-            binding.provider_etag, binding.marker_present, binding.canonical_version,
+            binding.baseline,
+            binding.provider_snapshot,
+            binding.observation_ref,
+            binding.provider_etag,
+            binding.marker_present,
+            binding.canonical_version,
             binding.provider_updated_at.replace(tzinfo=binding.provider_updated_at.tzinfo or UTC)
-            if binding.provider_updated_at else None,
+            if binding.provider_updated_at
+            else None,
         )
         changed = previous != current
         if changed:
@@ -359,11 +547,13 @@ class TaskSyncService:
         from docket.services.task_provider_intents import TaskProviderIntentService
 
         TaskProviderIntentService(self.session, self.settings).recover_stale(
-            binding, observation.ref_id,
+            binding,
+            observation.ref_id,
         )
         return {
             "state": "conflict" if fields else "reconciled" if changed else "unchanged",
             "task_ref": task.ref_id,
-            "binding_ref": binding.ref_id, "conflict_fields": fields,
+            "binding_ref": binding.ref_id,
+            "conflict_fields": fields,
             "observation_ref": observation.ref_id,
         }

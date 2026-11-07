@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "head": "20261106f6a7",
+  "postgresql": "16.9",
+  "providers": "synthetic Calendar and Tasks",
+  "checks": {
+    "task_storage_shape": "passed",
+    "task_import_genuine_policy_root": "passed",
+    "task_full_title_and_derived_item": "passed",
+    "task_binding_requires_retained_revision": "passed",
+    "task_native_concurrent_edit": "one_commit",
+    "task_shared_operation_and_retained_delivery": "passed",
+    "task_reminder_atomic_queue_and_title_header": "passed",
+    "task_reminder_concurrent_replacement": "one_commit",
+    "task_reminder_completion_cancellation": "passed",
+    "task_subtree_concurrent_completion": "one_commit",
+    "task_subtree_dependent_delivery_and_retraction": "passed"
+  },
+  "local_checks": {
+    "native": 268,
+    "provider": 122,
+    "ruff": "passed",
+    "strict_mypy": "passed"
+  },
+  "production_rows_changed": false,
+  "temporary_instance_removed": true,
+  "release_or_activation_evidence": false,
+  "updated_at": "2026-11-07T00:09:55.927498+00:00",
+  "rehearsal_script_sha256": "38a62ef5bead4e9ed83722261978f82b559ab7089f5ce34fe84e0449ba4c9227"
+}

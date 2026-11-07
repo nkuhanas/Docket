@@ -309,6 +309,7 @@ class TaskProviderIntentService:
         values: dict[str, Any],
         *,
         after: str | None = None,
+        carried_by: str | None = None,
     ) -> Operation:
         key = f"{changeset.ref_id}:tasks:{binding.ref_id}:{task.version}:{kind}:" + ",".join(values)
         existing = self.session.scalar(select(Operation).where(Operation.idempotency_key == key))
@@ -343,6 +344,7 @@ class TaskProviderIntentService:
             "append_marker": kind == "insert" or binding.marker_present,
             "sequence": sequence,
             "title_prefix": task_time_header(task)[0],
+            "carried_by_task_ref": carried_by,
         }
         if kind == "insert":
             # An over-limit note stays canonical. Its explicit field limitation
@@ -388,12 +390,67 @@ class TaskProviderIntentService:
         intent = self.session.get(IntentSession, changeset.intent_session_id)
         policy_import = intent is not None and bool(intent.source_policy_effect_ref)
         queued: list[Operation] = []
-        for change in content.tracked_context_changes:
-            if change.object_type not in {"task", "task_sync_resolution"}:
+        from docket.services.task_subtrees import child_change
+
+        frames: list[tuple[Any, str, str | None, str | None]] = []
+        for original in content.tracked_context_changes:
+            refs = [
+                ref for ref in refs_by_change.get(original.change_id, []) if ref.startswith("task_")
+            ]
+            if not refs:
                 continue
-            refs = refs_by_change.get(change.change_id, [])
-            task_ref = next((ref for ref in refs if ref.startswith("task_")), None)
-            if task_ref is None:
+            group = original.change_id if len(refs) > 1 else None
+            derived_frames: list[tuple[Any, str]] = []
+            for ref in refs[1:]:
+                child = self.session.scalar(select(Task).where(Task.ref_id == ref))
+                assert child is not None
+                derived_change = child_change(original, child)
+                if derived_change is not None:
+                    derived_frames.append((derived_change, ref))
+            scoped: list[tuple[Any, str]] = [(original, refs[0]), *derived_frames]
+            moving = (
+                original.action == "update" and "task_list_ref" in original.payload.model_fields_set
+            )
+            if moving and derived_frames:
+                # Google's one parent move carries the subtree. Child operations
+                # retain actual destination reads, never issue duplicate moves.
+                for frame, ref in scoped:
+                    payload = frame.payload.model_dump(exclude_unset=True)
+                    movement = {
+                        key: payload.pop(key)
+                        for key in ("task_list_ref", "parent_task_ref", "after_task_ref")
+                        if key in payload
+                    }
+                    move = frame.model_copy(
+                        update={"payload": frame.payload.model_validate(movement)}
+                    )
+                    frames.append((move, ref, refs[0] if ref != refs[0] else None, group))
+                remaining: list[tuple[Any, str]] = []
+                for frame, ref in scoped:
+                    rest = {
+                        key: value
+                        for key, value in frame.payload.model_dump(
+                            exclude_unset=True,
+                        ).items()
+                        if key not in {"task_list_ref", "parent_task_ref", "after_task_ref"}
+                    }
+                    if rest:
+                        remaining.append(
+                            (
+                                frame.model_copy(
+                                    update={
+                                        "payload": frame.payload.model_validate(rest),
+                                    }
+                                ),
+                                ref,
+                            )
+                        )
+                scoped = remaining
+            # Complete/delete known children first. New Google children still
+            # follow the parent's admitted current-subtree semantics.
+            frames.extend((frame, ref, None, group) for frame, ref in reversed(scoped))
+        for change, task_ref, carried_by, _group in frames:
+            if change.object_type not in {"task", "task_sync_resolution"}:
                 continue
             task = self.session.scalar(select(Task).where(Task.ref_id == task_ref))
             assert task is not None
@@ -401,14 +458,19 @@ class TaskProviderIntentService:
                 # A confirmed completion retires only the managed display
                 # header; imported user fields never produce an echo write.
                 binding = self.bindings.active(task.ref_id)
-                if (binding is not None and binding.provider_task_id
-                        and task.canonical_status == "active"
-                        and task.remind_at is None
-                        and binding.provider_snapshot.get("transport_title_prefix")):
-                    self.supersede_pending(task.ref_id, changeset, fields={"title"},
-                                           binding_ref=binding.ref_id)
-                    queued.append(self._queue(task, binding, changeset, "patch",
-                                              {"title": task.title}))
+                if (
+                    binding is not None
+                    and binding.provider_task_id
+                    and task.canonical_status == "active"
+                    and task.remind_at is None
+                    and binding.provider_snapshot.get("transport_title_prefix")
+                ):
+                    self.supersede_pending(
+                        task.ref_id, changeset, fields={"title"}, binding_ref=binding.ref_id
+                    )
+                    queued.append(
+                        self._queue(task, binding, changeset, "patch", {"title": task.title})
+                    )
                 continue
             binding = self._binding(task, changeset)
             if binding is None:
@@ -431,29 +493,37 @@ class TaskProviderIntentService:
                     }
                 )
                 if fields.intersection({"status", "deletion", "scheduled_date"}):
-                    pending_header = self.session.scalar(select(OperationTarget.id).join(
-                        Operation,
-                    ).where(
-                        OperationTarget.parameters["binding_ref"].as_string() == binding.ref_id,
-                        OperationTarget.parameters["title_prefix"].as_string() != "",
-                        Operation.status.in_({"pending", "running", "reconciliation_required"}),
-                    ).limit(1))
-                    if (pending_header is not None
-                            or binding.provider_snapshot.get("transport_title_prefix")
-                            or task_time_header(task)[0]):
+                    pending_header = self.session.scalar(
+                        select(OperationTarget.id)
+                        .join(
+                            Operation,
+                        )
+                        .where(
+                            OperationTarget.parameters["binding_ref"].as_string() == binding.ref_id,
+                            OperationTarget.parameters["title_prefix"].as_string() != "",
+                            Operation.status.in_({"pending", "running", "reconciliation_required"}),
+                        )
+                        .limit(1)
+                    )
+                    if (
+                        pending_header is not None
+                        or binding.provider_snapshot.get("transport_title_prefix")
+                        or task_time_header(task)[0]
+                    ):
                         fields.add("title")
                 after = getattr(values, "after_task_ref", None)
                 if change.action == "update":
                     # A derived time header does not authorize resolving an
                     # independently conflicting user-authored title.
                     explicit_fields = {
-                        _FIELD_NAMES[key] for key in values.model_fields_set
+                        _FIELD_NAMES[key]
+                        for key in values.model_fields_set
                         if key in _FIELD_NAMES and key not in {"remind_at", "reminder_timezone"}
                     }
                     self.operator_update(binding, task, explicit_fields, changeset)
             desired = canonical_values(task)
             blocked = self._open_fields(binding)
-            if task.canonical_status == "retracted":
+            if task.canonical_status == "retracted" or task.task_state == "cancelled":
                 self.supersede_pending(task.ref_id, changeset, binding_ref=binding.ref_id)
                 in_flight = self.session.scalar(
                     select(Operation)
@@ -515,25 +585,6 @@ class TaskProviderIntentService:
                     continue
             if "deletion" in blocked:
                 continue
-            for group in ({"title"}, {"notes"}, {"scheduled_date"}, {"status", "completed_at"}):
-                if (
-                    not fields.intersection(group)
-                    or blocked.intersection(group)
-                    or set(binding.limitations).intersection(group)
-                ):
-                    continue
-                selected = {key: desired[key] for key in sorted(group)}
-                if all(
-                    key in binding.provider_snapshot and binding.provider_snapshot[key] == value
-                    for key, value in selected.items()
-                ) and ("title" not in selected or binding.provider_snapshot.get(
-                    "transport_title_prefix", "",
-                ) == task_time_header(task)[0]):
-                    continue
-                self.supersede_pending(
-                    task.ref_id, changeset, binding_ref=binding.ref_id, fields=group
-                )
-                queued.append(self._queue(task, binding, changeset, "patch", selected))
             if fields.intersection({"parent", "position", "location"}) and not blocked.intersection(
                 {"parent", "location"},
             ):
@@ -543,11 +594,55 @@ class TaskProviderIntentService:
                         binding,
                         changeset,
                         "move",
-                        {
-                            "parent": task.parent_task_ref,
-                            "location": task.task_list_ref,
-                        },
+                        {"parent": task.parent_task_ref, "location": task.task_list_ref},
                         after=after,
+                        carried_by=carried_by,
                     )
                 )
+            for field_group in (
+                {"title"},
+                {"notes"},
+                {"scheduled_date"},
+                {"status", "completed_at"},
+            ):
+                if (
+                    not fields.intersection(field_group)
+                    or blocked.intersection(field_group)
+                    or set(binding.limitations).intersection(field_group)
+                ):
+                    continue
+                selected = {key: desired[key] for key in sorted(field_group)}
+                if all(
+                    key in binding.provider_snapshot and binding.provider_snapshot[key] == value
+                    for key, value in selected.items()
+                ) and (
+                    "title" not in selected
+                    or binding.provider_snapshot.get(
+                        "transport_title_prefix",
+                        "",
+                    )
+                    == task_time_header(task)[0]
+                ):
+                    continue
+                self.supersede_pending(
+                    task.ref_id, changeset, binding_ref=binding.ref_id, fields=field_group
+                )
+                queued.append(self._queue(task, binding, changeset, "patch", selected))
+        scopes: list[set[str]] = []
+        for _, _ref, _, group in frames:
+            if group:
+                scope = {item[1] for item in frames if item[3] == group}
+                overlapping = [other for other in scopes if other.intersection(scope)]
+                for other in overlapping:
+                    scope.update(other)
+                    scopes.remove(other)
+                scopes.append(scope)
+        for scope in scopes:
+            predecessor = None
+            for operation in queued:
+                if not scope.intersection(operation.canonical_target_refs):
+                    continue
+                if predecessor is not None:
+                    operation.predecessor_operation_id = predecessor.id
+                predecessor = operation
         return queued

@@ -88,6 +88,8 @@
     "complete_parent_cascades_to_child": true,
     "patch_deleted_supported": true,
     "patch_deleted_cascades_to_child": true,
-    "created_test_records_cleaned": true
+    "created_test_records_cleaned": true,
+    "parent_completion_preserves_already_completed_child_time": true,
+    "parent_completion_changes_already_completed_child_etag": true
   }
 }

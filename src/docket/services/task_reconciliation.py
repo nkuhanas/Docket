@@ -60,7 +60,7 @@ def canonical_values(task: Task) -> dict[str, Any]:
             else None
         ),
         "parent": task.parent_task_ref,
-        "deletion": task.canonical_status == "retracted",
+        "deletion": task.canonical_status == "retracted" or task.task_state == "cancelled",
     }
 
 
