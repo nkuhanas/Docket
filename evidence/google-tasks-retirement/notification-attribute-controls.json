@@ -1,0 +1,115 @@
+{
+  "verified_at": "2026-11-07T02:44:59.133758+00:00",
+  "target_calendar": "Docket validation",
+  "attribute_controls": [
+    {
+      "code": "C",
+      "title": "API control C: private",
+      "verified_created": true,
+      "created": "2026-11-07T02:44:55.000Z",
+      "start": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T19:10:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "visibility": "private",
+      "availability": "opaque",
+      "has_metadata": false,
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "no_guests": true
+    },
+    {
+      "code": "D",
+      "title": "API control D: one minute",
+      "verified_created": true,
+      "created": "2026-11-07T02:44:56.000Z",
+      "start": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T18:56:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "visibility": "default",
+      "availability": "opaque",
+      "has_metadata": false,
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "no_guests": true
+    },
+    {
+      "code": "E",
+      "title": "API control E: metadata",
+      "verified_created": true,
+      "created": "2026-11-07T02:44:57.000Z",
+      "start": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T19:10:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "visibility": "default",
+      "availability": "opaque",
+      "has_metadata": true,
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "no_guests": true
+    },
+    {
+      "code": "F",
+      "title": "API control F: baseline",
+      "verified_created": true,
+      "created": "2026-11-07T02:44:58.000Z",
+      "start": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T19:10:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "visibility": "default",
+      "availability": "opaque",
+      "has_metadata": false,
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "no_guests": true
+    }
+  ],
+  "device_observation": "pending"
+}

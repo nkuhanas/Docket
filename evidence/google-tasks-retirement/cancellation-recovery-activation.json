@@ -1,0 +1,82 @@
+{
+  "recorded_at": "2026-11-07T02:47:04.179619+00:00",
+  "implementation_commit": "5a2d63f4e0c2d0404c4f1eb397b0cf8da39372b0",
+  "source_tree": "cf18e63abc218e85b0b2809305e6705565cbdabc",
+  "tested_and_deployed_image": "sha256:728b93056514a6602f67d3563818b88a619337e27562eb0eeb2a48ab7c714095",
+  "checks": {
+    "native": "passed",
+    "release": "passed",
+    "storage": "passed",
+    "static": "passed",
+    "postgres": "passed"
+  },
+  "release_test_cases": 458,
+  "additional_provider_test_cases": 135,
+  "schema_head": "20261106a7b8",
+  "pr": 67,
+  "deployment_drain_backup_health": "passed",
+  "backup_retained": true,
+  "rollback_image": "docket-docket:rollback-20261107T023044Z",
+  "live_recovery": {
+    "original_operation_ref": "op_01M6SW2K9RVV6R1ZPQMV4EYM4M",
+    "original_changeset_ref": "chg_01M6SW2K2BGK6GJ26ZE68GN16Z",
+    "status": "succeeded",
+    "actual_transport_unknown_then_conditional_success": true,
+    "sent_parameters_hash_preserved": true,
+    "recovery_poll_seconds": 15.0,
+    "attempts": [
+      {
+        "kind": "execute",
+        "status": "unknown",
+        "error_code": "calendar_unknown_outcome",
+        "started_at": "2026-11-07T02:05:55.525541+00:00"
+      },
+      {
+        "kind": "reconcile",
+        "status": "unknown",
+        "error_code": "reconciliation_ambiguous",
+        "started_at": "2026-11-07T02:09:19.810734+00:00"
+      },
+      {
+        "kind": "reconcile",
+        "status": "unknown",
+        "error_code": "reconciliation_ambiguous",
+        "started_at": "2026-11-07T02:15:16.313748+00:00"
+      },
+      {
+        "kind": "reconcile",
+        "status": "unknown",
+        "error_code": "reconciliation_ambiguous",
+        "started_at": "2026-11-07T02:20:16.728212+00:00"
+      },
+      {
+        "kind": "reconcile",
+        "status": "unknown",
+        "error_code": "reconciliation_ambiguous",
+        "started_at": "2026-11-07T02:25:17.357766+00:00"
+      },
+      {
+        "kind": "reconcile",
+        "status": "unknown",
+        "error_code": "reconciliation_ambiguous",
+        "started_at": "2026-11-07T02:30:18.222686+00:00"
+      },
+      {
+        "kind": "reconcile",
+        "status": "failed",
+        "error_code": "reconciliation_no_match",
+        "started_at": "2026-11-07T02:35:32.203085+00:00"
+      },
+      {
+        "kind": "execute",
+        "status": "succeeded",
+        "error_code": null,
+        "started_at": "2026-11-07T02:35:33.586775+00:00"
+      }
+    ],
+    "all_four_retired_marker_bindings_cancelled": true,
+    "task_reminder_cleared": true,
+    "manual_production_row_changes": false
+  },
+  "device_popup_acceptance": "pending"
+}

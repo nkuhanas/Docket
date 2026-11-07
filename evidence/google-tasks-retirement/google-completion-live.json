@@ -1,0 +1,17 @@
+{
+  "verified_at": "2026-11-07T02:34:57.231017+00:00",
+  "real_google_api": true,
+  "test_target": "Docket validation",
+  "task_ref": "task_01M6STQCN6XXYVS4CMGZZW93HD",
+  "item_ref": "item_01M6STQCN3YWP8C7AKQYCK7Q9Y",
+  "google_completion_imported": true,
+  "completion_clears_reminder": true,
+  "identical_observation_does_not_duplicate_version": true,
+  "google_reopen_imported": true,
+  "reopen_does_not_restore_past_alert": true,
+  "item_reference_preserved": true,
+  "completed_version": 5,
+  "reopened_version": 6,
+  "imports_through_admitted_service": true,
+  "device_controls_separate": true
+}

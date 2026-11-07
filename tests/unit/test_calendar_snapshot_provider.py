@@ -55,7 +55,12 @@ def test_google_snapshot_request_is_bounded_paginated_and_redacted(monkeypatch) 
                         },
                         "updated": "2026-07-22T10:00:00Z",
                         "etag": '"etag"',
-                    }
+                    },
+                    {
+                        "id": "provider-point", "status": "confirmed", "summary": "Point",
+                        "start": {"dateTime": "2026-07-23T10:00:00-07:00"},
+                        "end": {"dateTime": "2026-07-23T10:00:00-07:00"},
+                    },
                 ],
             },
         )
@@ -96,6 +101,8 @@ def test_google_snapshot_request_is_bounded_paginated_and_redacted(monkeypatch) 
     assert not hasattr(event, "description")
     assert not hasattr(event, "attendees")
     assert not hasattr(event, "conference_data")
+    point = page.events[1]
+    assert point.start_at == point.end_at == datetime(2026, 7, 23, 17, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(
@@ -104,6 +111,11 @@ def test_google_snapshot_request_is_bounded_paginated_and_redacted(monkeypatch) 
         {"items": "not-a-list"},
         {"items": ["not-an-event"]},
         {"items": [], "nextPageToken": 42},
+        {"items": [{
+            "id": "backwards-time", "status": "confirmed",
+            "start": {"dateTime": "2026-07-23T10:00:00-07:00"},
+            "end": {"dateTime": "2026-07-23T09:00:00-07:00"},
+        }]},
         {
             "items": [
                 {

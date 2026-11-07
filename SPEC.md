@@ -27,7 +27,7 @@ Wire models remain machine definitions; AGENTS is an operating guide;
 CONTRIBUTING and runbooks describe procedures, not competing specifications.
 
 The Operator goal to implement the [Google Tasks/NocoDB delta](deltas/2026-11-06T17-59-26Z-google-tasks-and-nocodb-retirement.md)
-adopts SPEC 1.2. Implementation is deployed from `3a6cd55521d7` (initial activation `c7d25789ecfb`), with contract v68,
+adopts SPEC 1.2. Implementation is deployed from `5a2d63f4e0c2` (initial activation `c7d25789ecfb`), with contract v68,
 114 tools and the same private plugin updated to 2.2.0. Source-bound release checks,
 PostgreSQL migration/concurrency proofs, deployment and actual Google method
 admission pass in the [activation receipt](evidence/google-tasks-retirement/activation.json).
@@ -426,6 +426,9 @@ ETag examples or a preflight GET cannot establish stale-write safety. Creation
 without verified upstream idempotency never blindly retries after unknown send;
 scope correlation/identity recovery and retain unresolved outcomes honestly.
 Recognized transport note markers are separate from canonical notes/baselines.
+Retain valid zero-duration timed Calendar observations as points without inventing
+duration or failing the whole snapshot. Canonical event creation still requires
+a positive interval; backwards provider ranges remain invalid.
 
 NocoDB retirement inventories dedicated resources and unique data, preserves a
 protected verified archive/disposition, imports useful records through admitted
@@ -540,6 +543,6 @@ disabled required operations do not complete two-way synchronization.
 
 | Version | Change |
 | --- | --- |
-| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from 3a6cd55521d7 with actual method admission and plugin 2.2.0. Fresh ChatGPT Tasks context and native write journeys pass; device popup acceptance remains pending. |
+| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from 5a2d63f4e0c2 with actual method admission and plugin 2.2.0. Fresh ChatGPT Tasks context and native write journeys pass; device popup acceptance remains pending. Valid point observations retain exact zero duration without changing canonical event-input rules. |
 | 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

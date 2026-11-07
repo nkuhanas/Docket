@@ -1,0 +1,64 @@
+{
+  "verified_at": "2026-11-07T02:30:17.775478+00:00",
+  "target_calendar": "Docket validation",
+  "plain_api_controls": [
+    {
+      "title": "API control A: normal",
+      "send_updates": "omitted",
+      "verified_created": true,
+      "created": "2026-11-07T02:30:16.000Z",
+      "start": {
+        "dateTime": "2026-11-06T18:40:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "visibility": "default",
+      "transparency": "opaque",
+      "no_docket_properties": true,
+      "no_guests": true
+    },
+    {
+      "title": "API control B: no updates",
+      "send_updates": "none",
+      "verified_created": true,
+      "created": "2026-11-07T02:30:17.000Z",
+      "start": {
+        "dateTime": "2026-11-06T18:40:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "visibility": "default",
+      "transparency": "opaque",
+      "no_docket_properties": true,
+      "no_guests": true
+    }
+  ],
+  "device_observation": {
+    "operator_report": "both A and B alerted on iPhone",
+    "send_updates_none_not_isolated_cause": true
+  }
+}

@@ -193,7 +193,7 @@ class CalendarSyncService:
                 and event.end_at is not None
                 and event.start_at.tzinfo is not None
                 and event.end_at.tzinfo is not None
-                and event.end_at > event.start_at
+                and event.end_at >= event.start_at
             )
         if not valid:
             raise CalendarProviderError(

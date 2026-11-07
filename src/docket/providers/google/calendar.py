@@ -968,7 +968,7 @@ class GoogleCalendarProvider:
                         raise ValueError
                     start_at = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
                     end_at = datetime.fromisoformat(end["dateTime"].replace("Z", "+00:00"))
-                    if start_at.tzinfo is None or end_at.tzinfo is None or end_at <= start_at:
+                    if start_at.tzinfo is None or end_at.tzinfo is None or end_at < start_at:
                         raise ValueError
                     start_at = start_at.astimezone(UTC)
                     end_at = end_at.astimezone(UTC)

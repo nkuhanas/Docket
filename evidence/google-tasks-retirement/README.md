@@ -104,3 +104,13 @@ validated 3a6cd55521d7 display correction and actual corrected history output.
 [notification-comparison.json](notification-comparison.json) records failed earlier
 iPhone attempts and a working app-created control; the equal-lead-time 6:25 API
 busy/free comparison remains pending observation. No phone success is inferred.
+
+[cancellation-recovery-activation.json](cancellation-recovery-activation.json) records
+the validated 5a2d63f4e0c2 recovery release and the actual original-operation cleanup
+under its preserved sent pin. [google-completion-live.json](google-completion-live.json)
+records real Google completion/reopening and no old-alarm replay.
+[plain-api-notification-controls.json](plain-api-notification-controls.json) records
+both working plain API alarms; [notification-attribute-controls.json](notification-attribute-controls.json)
+records the pending 6:55 property comparison. These controls do not by themselves
+prove a Task companion alarm. Valid Google point observations also require the
+reader correction and a successful real postdeploy Calendar generation.

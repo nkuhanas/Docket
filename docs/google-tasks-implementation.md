@@ -365,3 +365,30 @@ stay unresolved and are not deleted. Retired creation remains blocked. Recovery
 polling defaults to fifteen seconds with existing per-operation backoff, replacing
 the five-minute cadence that delayed the live test. Three focused interleavings
 prove unchanged cleanup and edits before/after the proof read.
+
+### Cancellation recovery activation and point observations
+
+[cancellation-recovery-activation.json](../evidence/google-tasks-retirement/cancellation-recovery-activation.json)
+records deployment of `5a2d63f4e0c2`, 458 release cases plus 135 affected provider
+checks, current schema/health and actual recovery of the original unknown
+cancellation with the same sent parameter hash. All four old marker bindings are
+cancelled. [google-completion-live.json](../evidence/google-tasks-retirement/google-completion-live.json)
+confirms actual Google completion/import once, reminder clearing and reopening
+without replaying the past alarm; the Item reference survives.
+
+Both plain API controls alerted on the iPhone at 6:40: default delivery and
+sendUpdates=none. [plain-api-notification-controls.json](../evidence/google-tasks-retirement/plain-api-notification-controls.json)
+retains their matched profile. Therefore the current observation does not identify
+sendUpdates as the fault. The 6:55 [single-attribute controls](../evidence/google-tasks-retirement/notification-attribute-controls.json)
+compare private visibility, one-minute duration and Docket metadata with a concurrent
+baseline. Actual Task-companion device acceptance remains incomplete.
+
+The phone-created control is a valid timed point whose Google start and end are
+equal. The old reader rejected it and left the entire selected Calendar snapshot
+stale. The correction preserves that exact zero-duration observation through
+provider parsing, cache validation and workload reads; no end time is invented.
+Canonical event creation and all-day ranges retain their positive-length rules.
+Mixed point/ordinary/owned-marker snapshots keep origin exclusion and zero point
+occupancy. Reversed provider intervals remain invalid. A new real refresh and
+workload check are required after deployment; a claimed refresh alone is not
+reported as successful promotion.

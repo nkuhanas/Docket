@@ -167,6 +167,10 @@ def test_rendered_owned_marker_survives_cache_rebuild_and_does_not_consume_capac
     provider.put_snapshot_event(observed)
     # This ordinary event copies the label/timing. Those are never ownership.
     provider.put_snapshot_event(replace(observed, provider_event_id="unowned-copy"))
+    provider.put_snapshot_event(replace(
+        observed, provider_event_id="unowned-point", summary="Calendar point",
+        end_at=observed.start_at,
+    ))
     settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
     sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: first)
     assert sync.run_due_once()
@@ -174,12 +178,14 @@ def test_rendered_owned_marker_survives_cache_rebuild_and_does_not_consume_capac
         rows = {row.provider_event_id: row for row in session.scalars(select(CalendarEventCache))}
         assert rows[delivered.external_event_id].origin_kind == "task_reminder"
         assert rows["unowned-copy"].origin_kind is None
+        assert rows["unowned-point"].start_at == rows["unowned-point"].end_at
         assert task_reminder_origins(session, account_id, "another-calendar") == {}
         assert task_reminder_origins(session, uuid.uuid4(), "validation-calendar") == {}
         workload = WorkloadCalendarService(session, settings).capture(
             first.astimezone(UTC) - timedelta(hours=1), last.astimezone(UTC) + timedelta(hours=1),
             first.astimezone(UTC),
         )
-        assert len(workload.rows) == 1
-        assert workload.rows[0].title == snapshot["summary"]
+        assert len(workload.rows) == 2
+        assert {row.title for row in workload.rows} == {snapshot["summary"], "Calendar point"}
+        assert sum((row.end - row.start).total_seconds() for row in workload.rows) == 60
         assert "unresolved_provider_snapshot_generation" not in workload.flags

@@ -859,3 +859,12 @@ compatibility endpoints. This proposal itself changes no published wire version.
 Drafting used current repository files, read-only container metadata and linked
 official Google API/UI documentation. No personal task rows, OAuth secrets or NocoDB
 database contents were read; no provider effects, migration or retirement ran.
+
+### Live acceptance clarification — Calendar point observations
+
+The iPhone-created notification control returned a confirmed timed Calendar event
+with equal start and end instants. Provider observations must retain that valid
+point without inventing a duration or making the entire Calendar generation stale.
+This is a reader/cache rule: canonical Event creation still requires a positive
+interval, and backwards or incomplete provider ranges remain invalid. Typed task
+reminder origin and workload exclusion survive the promoted mixed snapshot.
