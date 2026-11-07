@@ -266,6 +266,7 @@ async def check_tasks(settings, factory, _principal):
                 ProviderEventBinding.canonical_target_ref == generation.projection_ref,
             ))
             observed_id = binding.provider_event_id
+            observed_account_id = binding.account_id
             requests_before = session.scalar(select(func.count()).select_from(AuthenticatedRequest))
         actual = calendar.events[observed_id]
         calendar.events[observed_id] = replace(actual, provider_etag='"calendar-clock-edited"')
@@ -281,7 +282,9 @@ async def check_tasks(settings, factory, _principal):
         calendar_sync = CalendarSyncService(factory, calendar, settings.model_copy(update={
             "calendar_reads_enabled": True, "tasks_enabled": False,
         }))
-        assert calendar_sync.run_due_once()
+        assert calendar_sync.sync_target(
+            observed_account_id, "synthetic-reminder-calendar", force=True,
+        )
         with factory() as session:
             task = session.scalar(select(Task).where(Task.ref_id == task_ref))
             assert task.remind_at == actual_start and task.reminder_generation == 3
