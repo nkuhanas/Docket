@@ -92,7 +92,9 @@ class TrackedContextService:
         if intent and intent.source_policy_effect_ref:
             effect = self.session.get(TaskPolicyEffect, intent.source_policy_effect_ref)
             assert effect is not None
-            actor_type, actor_id = "task_sync_policy", effect.policy_ref
+            actor_type = ("task_reminder_policy" if effect.reminder_generation_ref
+                          else "task_sync_policy")
+            actor_id = effect.policy_ref or effect.reminder_generation_ref or effect.ref_id
         elif intent and intent.source_request_ref:
             request = self.session.scalar(select(AuthenticatedRequest).where(
                 AuthenticatedRequest.ref_id == intent.source_request_ref,

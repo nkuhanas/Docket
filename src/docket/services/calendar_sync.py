@@ -259,6 +259,9 @@ class CalendarSyncService:
         now = _aware(self.clock()).astimezone(UTC)
         generation = uuid.uuid4()
         with self.session_factory.begin() as session:
+            from docket.services.task_item_titles import lock_task_rows
+
+            lock_task_rows(session)
             state = session.scalar(
                 select(CalendarSyncState).where(CalendarSyncState.id == state_id).with_for_update()
             )
@@ -285,10 +288,12 @@ class CalendarSyncService:
             bindings = {
                 row.provider_event_id: row
                 for row in session.scalars(
-                    select(ProviderEventBinding).where(
+                    select(ProviderEventBinding)
+                    .where(
                         ProviderEventBinding.account_id == state.account_id,
                         ProviderEventBinding.calendar_id == state.calendar_id,
-                    ).with_for_update()
+                    )
+                    .with_for_update()
                 )
             }
             seen: set[str] = set()
@@ -378,6 +383,38 @@ class CalendarSyncService:
                             data={"previous_provider_etag": previous_etag},
                         )
                     )
+                origin = origins.get(event.provider_event_id)
+                if origin is not None and binding is not None:
+                    from docket.models import TaskReminderGeneration
+                    from docket.services.task_reminder_inbound import TaskReminderInbound
+
+                    reminder = session.scalar(
+                        select(TaskReminderGeneration).where(
+                            TaskReminderGeneration.projection_ref == origin.projection_ref,
+                        )
+                    )
+                    if reminder is not None:
+                        try:
+                            with session.begin_nested():
+                                outcome = TaskReminderInbound(session, self.settings).reconcile(
+                                    reminder,
+                                    event,
+                                    binding,
+                                    read_started_at=state.last_attempt_at or now,
+                                )
+                        except DocketError as exc:
+                            outcome = exc.code
+                        if outcome not in {"unchanged", "retired", "reconciled"}:
+                            session.add(
+                                AuditEvent(
+                                    event_type="task.reminder_observation_deferred",
+                                    actor_type="system",
+                                    actor_id="calendar_sync",
+                                    primary_ref=reminder.task_ref,
+                                    affected_refs=[reminder.task_ref, reminder.projection_ref],
+                                    data={"reason": outcome},
+                                )
+                            )
             removed_ids = [row.id for event_id, row in existing.items() if event_id not in seen]
             if removed_ids:
                 session.execute(
@@ -491,10 +528,12 @@ class CalendarSyncService:
         recovered = 0
         with self.session_factory.begin() as session:
             for state in session.scalars(
-                select(CalendarSyncState).where(
+                select(CalendarSyncState)
+                .where(
                     CalendarSyncState.status == "syncing",
                     CalendarSyncState.leased_until < now,
-                ).with_for_update(skip_locked=True)
+                )
+                .with_for_update(skip_locked=True)
             ):
                 state.status = "stale" if state.last_success_at else "failed"
                 state.last_error_code = "calendar_sync_lease_expired"
@@ -576,7 +615,8 @@ class CalendarReadService:
             if operator_utterance_ref is not None:
                 with self.session_factory.begin() as session:
                     resolved = bind_calendar_date(
-                        session, utterance_ref=operator_utterance_ref,
+                        session,
+                        utterance_ref=operator_utterance_ref,
                         timezone=self.settings.timezone,
                         relative_day="today" if relative_day == "today" else "tomorrow",
                     )
@@ -616,9 +656,15 @@ class CalendarReadService:
                 "local_date": local_date.isoformat() if local_date else None,
                 "timezone": str(zone),
                 **(
-                    {("authenticated_request_ref" if operator_utterance_ref.startswith("req_")
-                      else "source_utterance_ref"): operator_utterance_ref}
-                    if operator_utterance_ref else {}
+                    {
+                        (
+                            "authenticated_request_ref"
+                            if operator_utterance_ref.startswith("req_")
+                            else "source_utterance_ref"
+                        ): operator_utterance_ref
+                    }
+                    if operator_utterance_ref
+                    else {}
                 ),
                 "as_of": now.isoformat(),
             },
@@ -745,16 +791,22 @@ class CalendarReadService:
                 )
             }
             moved_occurrences = {
-                item.replacement_event_ref: item for item in session.scalars(
-                    select(EventOccurrence).where(EventOccurrence.replacement_event_ref.in_(canonical_refs))
+                item.replacement_event_ref: item
+                for item in session.scalars(
+                    select(EventOccurrence).where(
+                        EventOccurrence.replacement_event_ref.in_(canonical_refs)
+                    )
                 )
             }
             parent_series = {
-                parent.ref_id: parent for parent in session.scalars(select(CanonicalEvent).where(
-                    CanonicalEvent.ref_id.in_(
-                        item.series_ref for item in moved_occurrences.values()
+                parent.ref_id: parent
+                for parent in session.scalars(
+                    select(CanonicalEvent).where(
+                        CanonicalEvent.ref_id.in_(
+                            item.series_ref for item in moved_occurrences.values()
+                        )
                     )
-                ))
+                )
             }
             temporal_bindings = {
                 temporal.ref_id: temporal
@@ -769,10 +821,7 @@ class CalendarReadService:
             }
             reminder_subject_refs = {
                 *canonicals,
-                *(
-                    projection.temporal_binding_ref
-                    for projection in temporal_projections.values()
-                ),
+                *(projection.temporal_binding_ref for projection in temporal_projections.values()),
             }
             plans = {
                 plan.subject_ref: plan
@@ -822,34 +871,44 @@ class CalendarReadService:
                 if moved is not None:
                     occurrence_identity = moved.identity_json
                 elif (
-                    canonical is not None and row.recurring_event_id
+                    canonical is not None
+                    and row.recurring_event_id
                     and result_view == "occurrences"
                 ):
                     series_zone = canonical.event_spec["timing"]["timezone"]
                     if row.original_start_at is not None:
                         original = _aware(row.original_start_at).astimezone(ZoneInfo(series_zone))
                         occurrence_identity = OccurrenceIdentity(
-                            series_ref=canonical.ref_id, original_date=original.date(),
+                            series_ref=canonical.ref_id,
+                            original_date=original.date(),
                             timezone=series_zone,
                             original_start_local=original.replace(tzinfo=None),
                             fold=original.fold,
                         ).model_dump(mode="json", exclude_none=True)
                     elif row.original_start_date is not None:
                         occurrence_identity = OccurrenceIdentity(
-                            series_ref=canonical.ref_id, original_date=row.original_start_date,
+                            series_ref=canonical.ref_id,
+                            original_date=row.original_start_date,
                             timezone=series_zone,
                         ).model_dump(mode="json", exclude_none=True)
                 return {
                     **({"occurrence_identity": occurrence_identity} if occurrence_identity else {}),
                     **(
-                        {"mutation_target": {
-                            "ref": occurrence_identity["series_ref"],
-                            "version": (
-                                parent_series[moved.series_ref].version
-                                if moved is not None else canonical.version if canonical else None
-                            ),
-                            "scope": {"kind": "occurrence", "identity": occurrence_identity},
-                        }} if occurrence_identity else {}
+                        {
+                            "mutation_target": {
+                                "ref": occurrence_identity["series_ref"],
+                                "version": (
+                                    parent_series[moved.series_ref].version
+                                    if moved is not None
+                                    else canonical.version
+                                    if canonical
+                                    else None
+                                ),
+                                "scope": {"kind": "occurrence", "identity": occurrence_identity},
+                            }
+                        }
+                        if occurrence_identity
+                        else {}
                     ),
                     "provider_event_id": (
                         series_identity if result_view == "series" else row.provider_event_id
@@ -864,9 +923,7 @@ class CalendarReadService:
                             "lane_ref": lane_ref,
                             "target_kind": target_kind,
                             "object_type": (
-                                "temporal_binding"
-                                if temporal_binding is not None
-                                else "event"
+                                "temporal_binding" if temporal_binding is not None else "event"
                             ),
                             "semantic_role": (
                                 temporal_binding.role
@@ -1007,9 +1064,7 @@ class CalendarReadService:
                 )
                 if calendar_offset == 0:
                     pages.append(page)
-                page_events = [
-                    {"calendar_id": calendar_id, **event} for event in page["events"]
-                ]
+                page_events = [{"calendar_id": calendar_id, **event} for event in page["events"]]
                 events.extend(page_events)
                 collected += len(page_events)
                 next_cursor = page.get("cursor")

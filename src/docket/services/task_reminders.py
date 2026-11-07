@@ -16,12 +16,14 @@ from docket.models import (
     ChangeSet,
     ExecutionAttempt,
     GoogleTaskList,
+    IntentSession,
     Operation,
     OperationTarget,
     ProviderAccount,
     ProviderEventBinding,
     ReminderPlan,
     Task,
+    TaskPolicyEffect,
     TaskReminderGeneration,
     TemporalBinding,
     TemporalCalendarProjection,
@@ -75,6 +77,38 @@ class TaskReminderService:
                 TaskReminderGeneration.generation == task.reminder_generation,
             )
         )
+
+    def status(self, task: Task) -> dict[str, Any]:
+        generation = self.current(task)
+        if generation is None:
+            return {"state": "unset"}
+        projection = self.session.scalar(
+            select(TemporalCalendarProjection).where(
+                TemporalCalendarProjection.ref_id == generation.projection_ref,
+            )
+        )
+        operation = self.session.scalar(
+            select(Operation)
+            .join(OperationTarget)
+            .where(
+                OperationTarget.canonical_target_ref == generation.projection_ref,
+            )
+            .order_by(Operation.created_at.desc())
+            .limit(1)
+        )
+        binding = self.session.scalar(
+            select(ProviderEventBinding).where(
+                ProviderEventBinding.canonical_target_ref == generation.projection_ref,
+            )
+        )
+        return {
+            "state": "set" if task.remind_at is not None else "cleared",
+            "generation": generation.generation,
+            "calendar_ref": projection.lane_ref if projection else None,
+            "delivery": operation.status if operation else "not_queued",
+            "operation_ref": operation.ref_id if operation else None,
+            "provider_binding": binding.status if binding else "unconfirmed",
+        }
 
     def route(self, task: Task, previous: TaskReminderGeneration | None) -> CalendarLane:
         lane_ref: str | None
@@ -132,13 +166,17 @@ class TaskReminderService:
             "superseded_before_next_call": True,
             **({"by_changeset_ref": changeset.ref_id} if changeset else {}),
         }
-        self.session.add(AuditEvent(
-            event_type="operation.superseded", actor_type="system",
-            actor_id="task_reminder_projection", primary_ref=operation.ref_id,
-            affected_refs=[operation.ref_id, target.canonical_target_ref],
-            basis_refs=[changeset.ref_id if changeset else operation.originating_changeset_ref],
-            data={"reason": "task_reminder_retired", "superseded_before_next_call": True},
-        ))
+        self.session.add(
+            AuditEvent(
+                event_type="operation.superseded",
+                actor_type="system",
+                actor_id="task_reminder_projection",
+                primary_ref=operation.ref_id,
+                affected_refs=[operation.ref_id, target.canonical_target_ref],
+                basis_refs=[changeset.ref_id if changeset else operation.originating_changeset_ref],
+                data={"reason": "task_reminder_retired", "superseded_before_next_call": True},
+            )
+        )
 
     def retire(self, generation: TaskReminderGeneration, changeset: ChangeSet) -> list[Operation]:
         projection = self.session.scalar(
@@ -165,12 +203,17 @@ class TaskReminderService:
         plan.canonical_status = time.canonical_status = "retracted"
         plan.version += 1
         time.version += 1
-        self.session.add(AuditEvent(
-            event_type="task_reminder.generation_retired", actor_type="system",
-            actor_id="task_reminder_projection", primary_ref=generation.task_ref,
-            affected_refs=[generation.ref_id, projection.ref_id, plan.ref_id, time.ref_id],
-            basis_refs=[changeset.ref_id], data={"generation": generation.generation},
-        ))
+        self.session.add(
+            AuditEvent(
+                event_type="task_reminder.generation_retired",
+                actor_type="system",
+                actor_id="task_reminder_projection",
+                primary_ref=generation.task_ref,
+                affected_refs=[generation.ref_id, projection.ref_id, plan.ref_id, time.ref_id],
+                basis_refs=[changeset.ref_id],
+                data={"generation": generation.generation},
+            )
+        )
         queued = []
         for creation, target in self.session.execute(
             select(Operation, OperationTarget)
@@ -234,12 +277,17 @@ class TaskReminderService:
                     parameters_sha256=sha256_json(parameters),
                 )
             )
-            self.session.add(AuditEvent(
-                event_type="operation.created", actor_type="system",
-                actor_id="task_reminder_projection", primary_ref=cancellation.ref_id,
-                affected_refs=[cancellation.ref_id, generation.task_ref, projection.ref_id],
-                basis_refs=[changeset.ref_id], data={"operation_type": "calendar_cancel_event"},
-            ))
+            self.session.add(
+                AuditEvent(
+                    event_type="operation.created",
+                    actor_type="system",
+                    actor_id="task_reminder_projection",
+                    primary_ref=cancellation.ref_id,
+                    affected_refs=[cancellation.ref_id, generation.task_ref, projection.ref_id],
+                    basis_refs=[changeset.ref_id],
+                    data={"operation_type": "calendar_cancel_event"},
+                )
+            )
             queued.append(cancellation)
         self.session.flush()
         return queued
@@ -253,6 +301,24 @@ class TaskReminderService:
         from docket.services.compensation_policies import instant
 
         queued = []
+        intent = self.session.get(IntentSession, changeset.intent_session_id)
+        effect = (
+            self.session.get(TaskPolicyEffect, intent.source_policy_effect_ref)
+            if intent is not None and intent.source_policy_effect_ref
+            else None
+        )
+        explicit_clocks = (
+            {
+                ref
+                for change in content.tracked_context_changes
+                if change.object_type == "task"
+                and (spec := change.create_spec or change.payload) is not None
+                and "remind_at" in spec.model_fields_set
+                for ref in refs_by_change.get(change.change_id, [])
+            }
+            if intent is not None and intent.source_request_ref
+            else set()
+        )
         task_refs = {
             ref
             for change in content.tracked_context_changes
@@ -307,9 +373,16 @@ class TaskReminderService:
                     and previous_instant == instant(task.remind_at)
                     and value.timezone == task.reminder_timezone
                     and title == ("Task reminder: " + task.title)[:512]
+                    and (ref not in explicit_clocks
+                         or self.route(task, None).ref_id == projection.lane_ref)
+                    and not (
+                        effect is not None
+                        and effect.reminder_generation_ref == old.ref_id
+                        and (effect.reminder_observation or {}).get("repair_required")
+                    )
                 ):
                     continue
-            lane = self.route(task, old) if active else None
+            lane = self.route(task, None if ref in explicit_clocks else old) if active else None
             if old is not None:
                 queued.extend(self.retire(old, changeset))
             if not active:
@@ -367,6 +440,9 @@ class TaskReminderService:
             )
             self.session.add(generation)
             self.session.flush()
+            from docket.services.task_reminder_inbound import retain_authority
+
+            retain_authority(self.session, generation, changeset, old)
             account = self.session.get(ProviderAccount, lane.account_id)
             assert account is not None
             refs = ProviderIntentService(self.session).materialize(
@@ -434,19 +510,28 @@ class TaskReminderService:
                 )
             return True
         if operation.operation_type == "calendar_create_event" and self.retired(generation):
-            uncertain = self.session.scalar(select(ExecutionAttempt.id).where(
-                ExecutionAttempt.operation_id == operation.id,
-                ExecutionAttempt.status == "unknown",
-            ).limit(1)) is not None
+            uncertain = (
+                self.session.scalar(
+                    select(ExecutionAttempt.id)
+                    .where(
+                        ExecutionAttempt.operation_id == operation.id,
+                        ExecutionAttempt.status == "unknown",
+                    )
+                    .limit(1)
+                )
+                is not None
+            )
             if uncertain:
                 operation.status = target.status = "reconciliation_required"
-                operation.next_attempt_at = target.next_attempt_at = (
-                    utc_now() + timedelta(seconds=30)
+                operation.next_attempt_at = target.next_attempt_at = utc_now() + timedelta(
+                    seconds=30
                 )
             else:
                 self._supersede(operation, target)
                 for child, child_target in self.session.execute(
-                    select(Operation, OperationTarget).join(OperationTarget).where(
+                    select(Operation, OperationTarget)
+                    .join(OperationTarget)
+                    .where(
                         Operation.predecessor_operation_id == operation.id,
                         Operation.operation_type == "calendar_cancel_event",
                         Operation.status == "pending",

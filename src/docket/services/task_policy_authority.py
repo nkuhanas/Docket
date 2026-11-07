@@ -132,6 +132,13 @@ class TaskPolicyAuthority:
         effect = self.session.get(TaskPolicyEffect, ref)
         if effect is None or effect.planner_version != PLANNER_VERSION:
             raise self.denied()
+        if effect.reminder_generation_ref is not None:
+            from docket.services.task_reminder_inbound import TaskReminderInbound
+
+            TaskReminderInbound(self.session, self.settings).require(effect, content, lock=lock)
+            return effect
+        if effect.policy_ref is None or effect.observation_ref is None:
+            raise self.denied()
         policy, listing = self.policy(effect.policy_ref, lock=lock)
         observation = self.session.get(GoogleTaskObservation, effect.observation_ref)
         if observation is None or observation.task_list_ref != listing.ref_id:

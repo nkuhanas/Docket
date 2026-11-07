@@ -59,7 +59,11 @@ class TaskViewService:
             "sync": TaskBindingService.status(binding) if binding else {"state": "local_only"},
             "version": task.version,
         }
+        from docket.services.task_reminders import TaskReminderService
         from docket.services.task_title_labels import task_time_header
+
+        if task.reminder_generation:
+            result["reminder"] = TaskReminderService(self.session).status(task)
 
         header, omitted = task_time_header(task)
         if header:
@@ -109,11 +113,17 @@ class TaskViewService:
 
             notes = row.fields.get("notes")
             correlation = creation_correlation(notes) if isinstance(notes, str) else None
-            pending = self.session.scalar(select(TaskProviderBinding).where(
-                TaskProviderBinding.task_list_ref == row.task_list_ref,
-                TaskProviderBinding.provider_task_id.is_(None),
-                TaskProviderBinding.correlation == correlation,
-            )) if correlation else None
+            pending = (
+                self.session.scalar(
+                    select(TaskProviderBinding).where(
+                        TaskProviderBinding.task_list_ref == row.task_list_ref,
+                        TaskProviderBinding.provider_task_id.is_(None),
+                        TaskProviderBinding.correlation == correlation,
+                    )
+                )
+                if correlation
+                else None
+            )
             if pending is not None:
                 result["pending_creation_task_ref"] = pending.task_ref
                 result["pending_creation_binding_ref"] = pending.ref_id
@@ -127,7 +137,8 @@ class TaskViewService:
             title = row.fields.get("title")
             result.update(
                 title=title[:256] if isinstance(title, str) else None,
-                limitation=exc.code, observed_fields_detail=notes_detail(row.ref_id),
+                limitation=exc.code,
+                observed_fields_detail=notes_detail(row.ref_id),
             )
         else:
             result.update({key: value for key, value in values.items() if key != "notes"})
@@ -167,8 +178,10 @@ class TaskViewService:
             "fields": remaining,
             "choices": values,
             "state": (
-                "resolved" if not remaining
-                else "superseded" if binding and binding.observation_ref != row.observation_ref
+                "resolved"
+                if not remaining
+                else "superseded"
+                if binding and binding.observation_ref != row.observation_ref
                 else "open"
             ),
             "resolved_fields": sorted(resolved),

@@ -315,6 +315,8 @@ class CalendarSnapshotEvent:
     provider_reminders: dict[str, Any] | None = None
     provider_etag: str | None = None
     provider_updated_at: datetime | None = None
+    visibility: str | None = None
+    transparency: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1064,6 +1066,8 @@ class GoogleCalendarProvider:
             provider_reminders=normalize_reminders(document.get("reminders")),
             provider_etag=etag[:1024] if isinstance(etag, str) and etag else None,
             provider_updated_at=provider_updated_at,
+            visibility=document.get("visibility"),
+            transparency=document.get("transparency"),
         )
 
     def list_events_page(

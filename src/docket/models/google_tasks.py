@@ -353,14 +353,31 @@ class TaskPolicyEffect(Base):
     """An exact deterministic import admission, never a fabricated user request."""
 
     __tablename__ = "task_policy_effects"
+    __table_args__ = (
+        CheckConstraint(
+            "(policy_ref IS NOT NULL AND observation_ref IS NOT NULL "
+            "AND reminder_generation_ref IS NULL AND reminder_observation IS NULL) OR "
+            "(policy_ref IS NULL AND observation_ref IS NULL "
+            "AND reminder_generation_ref IS NOT NULL AND reminder_observation IS NOT NULL)",
+            name="ck_task_policy_effect_source",
+        ),
+    )
     ref_id: Mapped[str] = mapped_column(
         String(40), primary_key=True, default=lambda: new_public_ref("teff")
     )
-    policy_ref: Mapped[str] = mapped_column(
-        ForeignKey("task_list_policy_revisions.ref_id", ondelete="RESTRICT"), nullable=False
+    policy_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("task_list_policy_revisions.ref_id", ondelete="RESTRICT"), nullable=True
     )
-    observation_ref: Mapped[str] = mapped_column(
-        ForeignKey("google_task_observations.ref_id", ondelete="RESTRICT"), nullable=False
+    observation_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("google_task_observations.ref_id", ondelete="RESTRICT"), nullable=True
+    )
+    reminder_generation_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("task_reminder_generations.ref_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    reminder_observation: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True),
+        nullable=True,
     )
     effect_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -405,6 +422,23 @@ class TaskReminderGeneration(Base):
     )
 
 
+class TaskReminderAuthority(Base):
+    """Immutable authority for one exact helper generation, independent of list sync."""
+
+    __tablename__ = "task_reminder_authorities"
+    generation_ref: Mapped[str] = mapped_column(
+        ForeignKey("task_reminder_generations.ref_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    operator_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    principal_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    authorized_request_ref: Mapped[str] = mapped_column(
+        ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    grant_epoch: Mapped[int | None] = mapped_column(Integer)
+
+
 def _immutable(_mapper: object, _connection: object, _target: object) -> None:
     raise ValueError("Task policies and synchronization evidence are immutable")
 
@@ -417,6 +451,7 @@ for _model in (
     TaskConflictResolution,
     TaskPolicyEffect,
     TaskReminderGeneration,
+    TaskReminderAuthority,
     TasksMethodValidation,
 ):
     event.listen(_model, "before_update", _immutable)

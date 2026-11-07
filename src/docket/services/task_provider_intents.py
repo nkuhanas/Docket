@@ -18,6 +18,7 @@ from docket.models import (
     OperationTarget,
     Task,
     TaskConflictResolution,
+    TaskPolicyEffect,
     TaskProviderBinding,
     TaskSyncConflict,
 )
@@ -389,6 +390,11 @@ class TaskProviderIntentService:
     ) -> list[Operation]:
         intent = self.session.get(IntentSession, changeset.intent_session_id)
         policy_import = intent is not None and bool(intent.source_policy_effect_ref)
+        effect = (
+            self.session.get(TaskPolicyEffect, intent.source_policy_effect_ref)
+            if intent is not None and intent.source_policy_effect_ref
+            else None
+        )
         queued: list[Operation] = []
         from docket.services.task_subtrees import child_change
 
@@ -462,8 +468,13 @@ class TaskProviderIntentService:
                     binding is not None
                     and binding.provider_task_id
                     and task.canonical_status == "active"
-                    and task.remind_at is None
-                    and binding.provider_snapshot.get("transport_title_prefix")
+                    and (
+                        (
+                            task.remind_at is None
+                            and binding.provider_snapshot.get("transport_title_prefix")
+                        )
+                        or (effect is not None and effect.reminder_generation_ref is not None)
+                    )
                 ):
                     self.supersede_pending(
                         task.ref_id, changeset, fields={"title"}, binding_ref=binding.ref_id

@@ -30,6 +30,7 @@ async def check_tasks(settings, factory, _principal):
         TaskListPolicyRevision,
         TaskPolicyEffect,
         TaskProviderBinding,
+        TaskReminderAuthority,
         TaskReminderGeneration,
         TasksAccountState,
         TasksMethodValidation,
@@ -62,6 +63,7 @@ async def check_tasks(settings, factory, _principal):
         TaskSyncState, TasksAccountState, TasksMethodValidation, TaskItemTitleOwnership,
         Operation, OperationTarget,
         TaskReminderGeneration, CalendarEventCache,
+        TaskReminderAuthority,
         ProviderEventBinding,
     ):
         columns = {column["name"]: column for column in inspect(engine).get_columns(
@@ -240,6 +242,57 @@ async def check_tasks(settings, factory, _principal):
         drain()
         assert sum(row.snapshot.get("status") != "cancelled"
                    for row in calendar.events.values()) == 1
+        from dataclasses import replace
+        from datetime import timedelta
+
+        from docket.providers.google.calendar import CalendarSnapshotEvent
+        from docket.services.calendar_sync import CalendarSyncService
+
+        with factory() as session:
+            task = session.scalar(select(Task).where(Task.ref_id == task_ref))
+            actual_start = task.remind_at + timedelta(hours=1)
+            generation = session.scalar(select(TaskReminderGeneration).where(
+                TaskReminderGeneration.task_ref == task_ref,
+                TaskReminderGeneration.generation == task.reminder_generation,
+            ))
+            binding = session.scalar(select(ProviderEventBinding).where(
+                ProviderEventBinding.canonical_target_ref == generation.projection_ref,
+            ))
+            observed_id = binding.provider_event_id
+            requests_before = session.scalar(select(func.count()).select_from(AuthenticatedRequest))
+        actual = calendar.events[observed_id]
+        calendar.events[observed_id] = replace(actual, provider_etag='"calendar-clock-edited"')
+        calendar.put_snapshot_event(CalendarSnapshotEvent(
+            provider_event_id=observed_id, status="confirmed", summary="Task reminder",
+            location=None, is_all_day=False, start_at=actual_start,
+            end_at=actual_start + timedelta(seconds=60), timezone="America/Los_Angeles",
+            visibility="private", transparency="transparent",
+            provider_etag='"calendar-clock-edited"',
+            provider_reminders={"useDefault": False,
+                                "overrides": [{"method": "popup", "minutes": 0}]},
+        ))
+        calendar_sync = CalendarSyncService(factory, calendar, settings.model_copy(update={
+            "calendar_reads_enabled": True, "tasks_enabled": False,
+        }))
+        assert calendar_sync.run_due_once()
+        with factory() as session:
+            task = session.scalar(select(Task).where(Task.ref_id == task_ref))
+            assert task.remind_at == actual_start and task.reminder_generation == 3
+            assert session.scalar(select(func.count()).select_from(
+                AuthenticatedRequest,
+            )) == requests_before
+            assert session.scalar(select(func.count()).select_from(TaskReminderAuthority)) == 3
+            authority_ref = session.scalar(select(TaskReminderAuthority.generation_ref))
+        try:
+            with factory.begin() as session:
+                session.execute(update(TaskReminderAuthority).where(
+                    TaskReminderAuthority.generation_ref == authority_ref,
+                ).values(grant_epoch=123))
+        except DBAPIError:
+            pass
+        else:
+            raise AssertionError("PostgreSQL accepted a rewritten reminder authority")
+        drain()
         packet = await call("docket_get_tasks_context", {"refs": [task_ref]})
         completed = await call("docket_update_task", {
             "context_id": packet["context_id"], "operation_id": "pg-complete-reminded-task",
@@ -310,6 +363,8 @@ async def check_tasks(settings, factory, _principal):
             "task_reminder_atomic_queue_and_title_header": "passed",
             "task_reminder_concurrent_replacement": "one_commit",
             "task_reminder_completion_cancellation": "passed",
+            "task_calendar_clock_import_genuine_scoped_authority": "passed",
+            "task_reminder_authority_postgres_immutable": "passed",
             "task_subtree_concurrent_completion": "one_commit",
             "task_subtree_dependent_delivery_and_retraction": "passed",
         }

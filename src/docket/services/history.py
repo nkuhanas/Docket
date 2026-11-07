@@ -284,6 +284,12 @@ class HistoryService:
                 state = {"policy_ref": item.policy_ref, "observation_ref": item.observation_ref,
                          "planner_version": item.planner_version, "effect_hash": item.effect_hash,
                          "expected_binding_version": item.expected_binding_version}
+                if item.reminder_generation_ref:
+                    state["reminder_generation_ref"] = item.reminder_generation_ref
+                    state["calendar_observation"] = {
+                        key: value for key, value in (item.reminder_observation or {}).items()
+                        if key in {"status", "start_at", "read_started_at", "repair_required"}
+                    }
             elif isinstance(item, TaskBindingRevision):
                 state = {"binding_ref": item.binding_ref, "revision": item.revision,
                          "task_list_ref": item.task_list_ref, "generation": item.generation,

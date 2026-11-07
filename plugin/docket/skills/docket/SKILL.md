@@ -14,6 +14,7 @@ Do not load the repository SPEC or the entire generated contract into a session.
 Read only the relevant workflow reference when needed:
 
 - [Actual work, timers and Calendar snapshots](references/work.md).
+- [Google Tasks, task lists and timed reminders](references/tasks.md).
 - [Compensation, timesheets, invoices, expenses and payments](references/finance.md).
 - [Workload, capacity and selective follow-up](references/operations.md).
 - [Exact previews, corrections and retained evidence](references/commands.md).

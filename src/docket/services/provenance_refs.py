@@ -64,6 +64,7 @@ from docket.models import (
     TaskListPolicyRevision,
     TaskPolicyEffect,
     TaskProviderBinding,
+    TaskReminderAuthority,
     TaskReminderGeneration,
     TaskSyncConflict,
     TemporalBinding,
@@ -80,10 +81,33 @@ from docket.models import (
 
 PROVENANCE_PREFIXES = frozenset(
     {
-        "tlist", "tpol", "tobs", "tbnd", "tbrv", "tscf", "teff", "trgen",
-        "pay", "ftxn", "fent",
-        "fdoc", "fdrev", "clm", "ceval", "alloc", "fobs", "exp", "exrev", "exobs",
-        "eng", "erev", "work", "wrev", "wrec", "wcal", "wcrv",
+        "tlist",
+        "tpol",
+        "tobs",
+        "tbnd",
+        "tbrv",
+        "tscf",
+        "teff",
+        "trgen",
+        "pay",
+        "ftxn",
+        "fent",
+        "fdoc",
+        "fdrev",
+        "clm",
+        "ceval",
+        "alloc",
+        "fobs",
+        "exp",
+        "exrev",
+        "exobs",
+        "eng",
+        "erev",
+        "work",
+        "wrev",
+        "wrec",
+        "wcal",
+        "wcrv",
         "utt",
         "req",
         "rec",
@@ -242,7 +266,8 @@ class ProvenanceRefService:
             from docket.services.work_calendar import WorkCalendarService
 
             WorkCalendarService(self.session).head(
-                item.projection_ref if isinstance(item, WorkCalendarRevision) else item.ref_id)
+                item.projection_ref if isinstance(item, WorkCalendarRevision) else item.ref_id
+            )
         if isinstance(item, WorkloadReconciliation):
             from docket.services.work_attribution import read_operator
 
@@ -255,7 +280,8 @@ class ProvenanceRefService:
 
             if item.operator_ref != read_operator():
                 raise DocketError(
-                    code="financial_record_unavailable", message="Select owned records.")
+                    code="financial_record_unavailable", message="Select owned records."
+                )
         if isinstance(item, Expense | ExpenseRevision | ExpenseObservation):
             from docket.services.expenses import ExpenseService
 
@@ -263,8 +289,15 @@ class ProvenanceRefService:
                 item.ref_id if isinstance(item, Expense) else item.expense_ref
             )
         if isinstance(
-            item, (FinancialDocument | FinancialDocumentRevision | WorkClaim
-                   | DocumentAllocation | FinancialDocumentObservation | CompensationEvaluation)
+            item,
+            (
+                FinancialDocument
+                | FinancialDocumentRevision
+                | WorkClaim
+                | DocumentAllocation
+                | FinancialDocumentObservation
+                | CompensationEvaluation
+            ),
         ):
             from docket.services.financial_documents import FinancialDocumentService
 
@@ -296,9 +329,26 @@ class ProvenanceRefService:
                 raise DocketError(
                     code="task_basis_unavailable", message="Select owned task records."
                 )
-        elif isinstance(item, GoogleTaskObservation | TaskProviderBinding
-                        | TaskBindingRevision | TaskSyncConflict | TaskPolicyEffect):
+        elif isinstance(
+            item,
+            GoogleTaskObservation
+            | TaskProviderBinding
+            | TaskBindingRevision
+            | TaskSyncConflict
+            | TaskPolicyEffect,
+        ):
             if isinstance(item, TaskPolicyEffect):
+                if item.reminder_generation_ref is not None:
+                    from docket.services.work_attribution import read_operator
+
+                    authority = self.session.get(
+                        TaskReminderAuthority, item.reminder_generation_ref
+                    )
+                    if authority is None or authority.operator_ref != read_operator():
+                        raise DocketError(
+                            code="task_basis_unavailable", message="Select owned reminder evidence."
+                        )
+                    return item
                 policy = self.session.get(TaskListPolicyRevision, item.policy_ref)
                 list_ref = policy.task_list_ref if policy else None
             elif isinstance(item, TaskSyncConflict):
@@ -370,8 +420,13 @@ class ProvenanceRefService:
                 stack.extend(item.incoming_statement_refs)
             elif isinstance(item, IntentSession):
                 stack.extend(
-                    ref for ref in (item.source_utterance_ref, item.source_request_ref,
-                                    item.source_policy_effect_ref) if ref
+                    ref
+                    for ref in (
+                        item.source_utterance_ref,
+                        item.source_request_ref,
+                        item.source_policy_effect_ref,
+                    )
+                    if ref
                 )
             elif isinstance(item, IntentTurn):
                 stack.extend(ref for ref in (item.utterance_ref, item.request_ref) if ref)

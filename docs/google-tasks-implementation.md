@@ -26,9 +26,9 @@ acceptance is claimed by a fixture or disabled capability.
 | G2 task writes | Flat create/update/complete/reopen/retract and exact retry/preview, with atomic Tasks intents | Shared Operation/Target/Attempt queue wired; native-to-fake create/edit/complete/reopen/delete, sparse conditional retries and explicit uncertain-creation repair pass. Live G0 remains |
 | G2 conflict/lifecycle | Three-way field merge, delete/edit conflict, detachment/disable/list loss without global blocking | Per-field merge, native resolution/detachment, supersession and scoped outbound recovery pass; live cross-interface validation remains |
 | G2 markers/limits | Transport-only marker baseline separation, no blind insert retry or silent field truncation | Unknown inserts recover only after complete scoped correlation coverage; missing markers stay uncertain, explicit link parks original uncertainty honestly, and polling defers plausible pending creations. More live limits/hierarchy cases remain |
-| G2 reminders | Flat remind_at derives exact owned primary Calendar companion, routing, reschedule/null/completion cancellation and uncertainty | Atomic generations and both provider queues implemented; rescheduling and native/Google completion retire helpers. Pending/claimed/unknown-create windows and PostgreSQL replacement race pass. Inbound Calendar helper edits/deletion remain |
+| G2 reminders | Flat remind_at derives exact owned primary Calendar companion, routing, reschedule/null/completion cancellation and uncertainty | Atomic generations and both provider queues implemented; rescheduling and native/Google completion retire helpers. Pending/claimed/unknown-create windows and PostgreSQL replacement race pass. Owned Calendar clock edits/deletion use exact immutable authority and genuine Calendar observations through the shared ChangeSet engine; revoked grants, copied identities and unsupported all-day edits cannot mutate Tasks. API and device acceptance remain |
 | G2 time display | Visible AM/PM time without relying on Google's opaque native clock | Derived Google title headers implemented; scoped normalization preserves clean Task/Item titles and Google-side renames. Independent reminder dates are labelled; 1,024-character titles remain lossless with an explicit display limitation |
-| G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Task generation flows serialize private/free popup-zero markers; real adapter read-back/privacy-change checks pass. Inbound helper reconciliation remains |
+| G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Task generation flows serialize private/free popup-zero markers; real adapter read-back/privacy-change checks pass. Owned-helper changes resnapshot privacy/free popup-zero projections through scoped canonical effects; live-host/device acceptance remains |
 | G2 workload origin | Validated typed origin survives cache refresh/restart and excludes canonical/cache commitment/capacity accounting | Scoped generation/retained-operation origin survives full cache rebuild and retired/unknown-create generations; workload excludes it before timing/accounting. Copied labels remain ordinary observations |
 | G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Task marker compilation and rendering/reconciliation pass autumn and spring transitions, including real UTC transport acceptance |
 | G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Live moves carry children/grandchildren with stable identities and no source tombstones. Deletion emits tombstones. Parent completion/deletion cascades without a parent-ETag change on child creation; Operator adopted Google-style subtree semantics (ADR 014). Canonical parent-first moves and child-first lifecycle support, durable cross-binding dependencies, exact destination reads, native/Google stable-ID moves and immediate stale-ETag reconciliation now pass native and isolated PostgreSQL checks. Selective inbox integration and uncertain ordering recovery remain |
@@ -182,3 +182,31 @@ and retraction. The disposable database was removed. The provider gate passed
 122 cases and the native gate 268; this is implementation evidence, not deployment
 or activation. Inbound Calendar reminder reconciliation, remaining G3 exceptions,
 release validation and same-App activation still remain.
+
+### Owned Calendar reminder imports
+
+An additive migration (`20261106a7b8`) retains immutable per-generation request,
+principal and grant-epoch authority. Calendar observations use a closed variant
+of the existing `teff_` service root, with their actual identity/ETag/clock proof;
+they do not masquerade as Google Task observations, user requests or utterances.
+The shared ChangeSet engine admits only remind_at/timezone for the current exact
+owned helper and current grant. Disabling Task-list synchronization does not
+revoke this independent Calendar relationship. Revoked grants, copied labels,
+retired generations, all-day edits and unsupported recurring conversions leave
+canonical work unchanged and retain a useful deferred reason.
+
+Clock changes replace/cancel the old helper and refresh the transport-only AM/PM
+header. Calendar deletion clears the reminder alone. Privacy/free/zero-popup
+changes resnapshot the owned helper under the same bounded authority. Canonical
+Task titles, scheduled days, deadlines, work and financial records stay scoped
+to their ordinary commands. Task views include compact generation, destination,
+operation/delivery and binding state; receipt success does not assert device
+notification display. Reminder source observations have a bounded history view.
+
+[reminder-inbound.json](../evidence/google-tasks-retirement/reminder-inbound.json)
+records fresh/empty-roundtrip PostgreSQL migration, genuine clock import while
+Tasks sync is disabled, immutable authority, parent/timer/race regressions and
+cleanup of the temporary database. Provider/storage gates passed 127/152 cases.
+The same-App source was inspected (USER/private, unchanged App and release);
+its prepared skill update adds only a conditional Tasks reference. Nothing from
+this slice has been deployed or published yet.
