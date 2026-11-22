@@ -13,7 +13,7 @@ Current specification: [SPEC 1.2](../SPEC.md).
 | Proposal | Review status |
 | --- | --- |
 | [2026-11-22T21-38-05Z — invoice numbering and external artifact evidence](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Proposed against SPEC 1.2. Reuses revision-pinned invoice JSON. Pending review on early numbering/date and minimum evidence for a selected file. |
-| [2026-11-22T22-08-43Z — financial ingestion and tax records](2026-11-22T22-08-43Z-financial-ingestion-and-tax-records.md) | Independent proposal against SPEC 1.2. Funding, billing evidence and statement matching first. Owned-mail routing remains open. |
+| [2026-11-22T22-08-43Z — financial ingestion and tax records](2026-11-22T22-08-43Z-financial-ingestion-and-tax-records.md) | Reviewed proposal against SPEC 1.2. F1 endorsed for implementation, F2 live mail gated on verified routing and retention. F3 matches F1 records. F4–F5 include tax payments, withholding and refunds. |
 
 ## Historical notes
 
