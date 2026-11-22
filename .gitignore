@@ -36,4 +36,5 @@ secrets/restore/*
 !/deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md
 !/deltas/2026-11-06T17-59-26Z-google-tasks-and-nocodb-retirement.md
 !/deltas/2026-11-22T21-38-05Z-invoice-materialization-boundary.md
+!/deltas/2026-11-22T22-08-43Z-financial-ingestion-and-tax-records.md
 .playwright-cli/
