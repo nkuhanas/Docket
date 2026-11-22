@@ -12,7 +12,7 @@ Current specification: [SPEC 1.2](../SPEC.md).
 
 | Proposal | Review status |
 | --- | --- |
-| [2026-11-22T21-38-05Z — portable invoices and external document materialization](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Proposed against SPEC 1.2. Operator review pending on early numbering, invoice date, optional artifact selection and file custody. |
+| [2026-11-22T21-38-05Z — invoice numbering and external artifact evidence](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Proposed against SPEC 1.2. Reuses revision-pinned invoice JSON. Pending review on early numbering/date and minimum evidence for a selected file. |
 
 ## Historical notes
 
