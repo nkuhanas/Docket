@@ -161,3 +161,5 @@ For the first statement pilot, select one authorized format and instrument and t
 ### F1/F2 operational entry points
 
 The [financial intake runbook](../docs/financial-intake-operations.md) records the nine native entry points, protected credential enrollment, checkpoint inspection and revocation. Funding identities use the existing native context/ChangeSet path. Statements consume an owned encrypted attachment. Both acquisition channels retain original evidence in the existing protected attachment store. November 22, 2026 is the first admitted mailbox date. The operator has confirmed local application-password enrollment. Live provider, actual ChatGPT file and deployment acceptance are separate observations.
+
+F1/F2 shipped in [release PR 71](https://github.com/nkuhanas/Docket/pull/71). The [activation record](../evidence/financial-intake/activation.json) distinguishes synthetic, deployed, actual file-handoff and mailbox evidence.
