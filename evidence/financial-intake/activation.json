@@ -1,0 +1,62 @@
+{
+  "spec": "1.3",
+  "phase": [
+    "F1",
+    "F2"
+  ],
+  "release_pr": 71,
+  "deployed_commit": "53cfd8822274ee6bf5324001df5b8f3131ea661d",
+  "tree": "8db876d006a9f075c173a2580b1feb44fcdf8420",
+  "image": "sha256:5a47379413f65914c7a713b9d67bcc1dc49dd092e32835e22eab946625609f4c",
+  "migration": "20261122b2c3",
+  "private_plugin_version": "2.3.0",
+  "plugin_release": "pluginrel_6b03911f11fc8191923f29a6e9ca291f",
+  "local_release": {
+    "groups": [
+      "native",
+      "provider",
+      "release",
+      "storage"
+    ],
+    "tests_passed": 602,
+    "ruff": "passed",
+    "mypy": "passed",
+    "disposable_postgresql": {
+      "migration_and_native_startup": "passed",
+      "concurrent_original_acceptance": "passed",
+      "immutable_funding_history": "passed",
+      "protected_original_round_trip": "passed"
+    }
+  },
+  "native_contracts": {
+    "catalogue_size": 123,
+    "added_tools": 9,
+    "largest_new_input_bytes": 1989,
+    "largest_new_definition_bytes": 2575,
+    "openai_file_params": [
+      "file"
+    ]
+  },
+  "deployment": {
+    "backup": "created",
+    "native_boundary": "passed",
+    "database_head": "verified"
+  },
+  "host_fixture": {
+    "path": "synthetic-receipt.pdf",
+    "sha256": "c346d0c14004510b8d0b74f5463c837228415dfcb7f3e6bc7bc9bd9585038ffb",
+    "chatgpt_file_handoff": "pending"
+  },
+  "purelymail": {
+    "backfill_start": "2026-11-22",
+    "local_password_enrollment": "operator_confirmed",
+    "synthetic_message_placed": "operator_confirmed",
+    "dns": "local_and_public_agree",
+    "https": "tls_succeeded",
+    "imap_tcp_993": "timed_out_from_host_and_deployment_network",
+    "authenticated_selection": "unverified",
+    "live_original_receipt": "unverified",
+    "production_acquisition": "disabled",
+    "enabled_source_grants": 0
+  }
+}
