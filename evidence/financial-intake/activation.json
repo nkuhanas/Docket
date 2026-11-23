@@ -74,10 +74,43 @@
     "synthetic_message_placed": "operator_confirmed",
     "dns": "local_and_public_agree",
     "https": "tls_succeeded",
-    "imap_tcp_993": "timed_out_from_host_and_deployment_network",
-    "authenticated_selection": "unverified",
-    "live_original_receipt": "unverified",
-    "production_acquisition": "disabled",
-    "enabled_source_grants": 0
+    "imap_tcp_993": "verified_after_gateway_egress_change",
+    "authenticated_selection": "dedicated_billing_inbox_read_only",
+    "live_original_receipt": "passed",
+    "production_acquisition": "running",
+    "enabled_source_grants": 1,
+    "active_policy_revision": 3,
+    "grant_revocation_test": {
+      "policy_read_http": 403,
+      "message_submission_http": 403,
+      "same_source_registration_reauthorized": true
+    },
+    "initial_scan": {
+      "admitted_messages": 2,
+      "retained_originals_matched_imap_sha256": 2,
+      "persistent_flags_unchanged": true,
+      "last_durable_acceptance_at": "2026-11-23T01:46:33.052692+00:00",
+      "subsequent_successful_poll_at": "2026-11-23T01:48:05.098577+00:00",
+      "pending_delivery": false,
+      "consecutive_failures": 0
+    },
+    "synthetic_fixture": {
+      "receipt_id": "DOCKET-SMOKE-01",
+      "source_ref": "src_01M831AQ6STP55DEPM59MAKW6Q",
+      "verified_at": "2026-11-23T01:48:13.388382+00:00",
+      "original_bytes": 5738,
+      "extraction": "complete",
+      "candidate_count": 1,
+      "amount": "1.00",
+      "currency": "USD",
+      "declared_business_use_percent": "100",
+      "write_off_intent": true,
+      "declaration_origin": "standing_policy",
+      "expense_links": 0,
+      "posted_activity_links": 0,
+      "reconnected_replay_http": 200,
+      "same_source_ref_on_replay": true,
+      "receipts_for_delivery_after_replay": 1
+    }
   }
 }
