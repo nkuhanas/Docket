@@ -38,3 +38,42 @@ A verified mailbox declaration applies to qualifying expenses. An address in an 
 ## Optional local suggestions
 
 The default extractor uses deterministic receipt labels and retained MIME/PDF parts. For admitted plain billing text, an administrator may enable a local classifier or extractor with `DOCKET_FINANCIAL_CLASSIFIER_MODEL`, `DOCKET_FINANCIAL_EXTRACTION_MODEL` and `DOCKET_FINANCIAL_OLLAMA_URL`. Configure the actual local model identifiers and a permitted local runtime address. The worker retains evidence-anchored proposals and bounded retry state. It has no authority to create instruments, declare business use or adopt purchases. No local model setup is required to accept originals.
+
+## Annual reconciliation
+
+Use the year context for a selected tax year. Request decisions to see missing
+evidence and conflicting amounts. Ask the agent to reconcile that report to
+refresh the shared Docket attention cases. Repeated review preserves case identity.
+The expenses, allocations, recurrence, income, totals and evidence sections are
+views of one retained report. For a full export request CSV or json_text and
+follow next_offset with the same report_ref, format and section.
+
+A statement charge can fund parts of several costs. Match each part to an
+existing expense with its amount. Pair a card repayment with the incoming leg.
+For reimbursements record and apply the received money in the existing settlement
+tools, then associate the bank observation. Enter the actual merchant description
+when confirming a monthly or yearly renewal. Docket flags a missing renewal
+only after an observed complete period.
+
+Record tax treatments for the selected expense revision, year and jurisdiction.
+Asset review and missing evidence remain open dispositions. Report paystubs and
+annual forms against the same engagement. Mark cumulative figures as year_to_date.
+An agent reads the source and supplies the supported figures. Docket checks
+their relationships and arithmetic. An annual form can corroborate a paystub
+without creating a deposit. Retain a report reference to reproduce its earlier
+figures after corrections.
+
+An operator with local service access can export a retained report and explicitly
+selected original files to a new age-encrypted archive. Run in the service
+environment using the configured operator and recovery encryption recipient.
+
+```sh
+python -m docket.financial_export_cli REPORT_REF /protected/year.tar.age --original SOURCE_REF
+```
+
+Each selected original must be in the report’s evidence index and still match
+its recorded digest. Omitting --original exports just the report. No evidence
+bytes are written to a plaintext temporary file.
+
+Release acceptance uses synthetic records. The first real statement and receipt
+pilot, followed by historical import in reviewed batches, is deferred by the operator.

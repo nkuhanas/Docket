@@ -93,3 +93,25 @@ For an uploaded receipt or statement, pass the host file to docket_submit_financ
 with a stable operation_id and only explicit operator declarations. Use docket_get_financial_context
 with its intake_ref for processing status. Link or adopt candidates with docket_update_financial_candidate.
 A posted charge, reviewed deduction and mailbox declaration each require their own basis.
+
+
+For “reconcile my year and show what needs my decision”, read
+`docket_get_financial_year` with the tax_year. Its default section is decisions.
+Use the returned context and report_ref with `docket_create_financial_year_review`
+to refresh the shared attention cases. Reopen the same report_ref to page through
+its expenses, allocations, income, totals, recurrence or evidence in JSON or CSV.
+Use a fresh report after a correction. Unobserved periods have unknown coverage.
+
+Supply refs to the year context before recording a match, making an expense
+treatment decision, designating tax payments or recording income evidence. Use
+the current finrev reference as prior_ref for corrections. A financial withdrawal
+retires an attribution while preserving its source. Record receipts and apply
+payments through the existing settlement commands. Match the posted bank
+observation against the applied reimbursement. An expected subscription creates
+a review finding when a covered period warrants it.
+
+Upload a paystub, W-2 or 1099 with evidence_role set to income_document. Retain
+the protected source and record supported period or annual amounts against that
+source and engagement. Use statement for card statements. Keep declared
+business use, reviewed deductions, gross wages, net payments and corroborating
+annual figures distinct. Report unresolved amounts and coverage.

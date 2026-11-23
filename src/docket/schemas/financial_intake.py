@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field
 from pydantic.json_schema import SkipJsonSchema
@@ -20,6 +20,10 @@ class HostFile(StrictModel):
 class SubmitEvidence(StrictModel):
     context_id: ContextId
     operation_id: OperationId
+    evidence_role: Literal["income_document", "statement"] | None = Field(
+        default=None,
+        description="Retain pay or statement evidence without purchase extraction.",
+    )
     file: HostFile
     business_use_percent: Decimal | None = Field(
         default=None, ge=0, le=100, max_digits=9, decimal_places=6

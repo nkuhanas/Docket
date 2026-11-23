@@ -85,6 +85,7 @@ class InteractiveAuthorityService:
         from docket.services.expenses import ExpenseService
         from docket.services.financial_documents import FinancialDocumentService
         from docket.services.financial_intake import FinancialIntakeService
+        from docket.services.financial_review import FinancialReviewService
         from docket.services.funding import FundingService
         from docket.services.settlement import SettlementService
         from docket.services.task_linking import TaskLinkService
@@ -113,6 +114,7 @@ class InteractiveAuthorityService:
                 "financial_transaction": SettlementService(session).apply,
                 "work_calendar_projection": WorkCalendarService(session).apply,
                 "workload_reconciliation": WorkloadFollowupService(session, get_settings()).apply,
+                **FinancialReviewService(session).handlers(),
                 **FundingService(session).handlers(),
                 "financial_candidate": FinancialIntakeService(session, get_settings()).resolve,
                 "expense": ExpenseService(session).apply,

@@ -1,6 +1,6 @@
 # Docket — financial ingestion and tax records
 
-**F1 and F2 adopted for SPEC 1.3 · F3–F5 architecture approved** · November 22, 2026. Reviewed against [SPEC 1.2](../SPEC.md), implementation `599c7d7c43d2` and native contract v69. The [invoice numbering and artifact proposal](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) remains pending and can be reviewed or shipped independently.
+**F1 and F2 adopted for SPEC 1.3 · F3–F5 adopted for SPEC 1.4** · November 22, 2026. Reviewed against [SPEC 1.2](../SPEC.md), implementation `599c7d7c43d2` and native contract v69. The [invoice numbering and artifact proposal](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) remains pending and can be reviewed or shipped independently.
 
 ## 1. Outcome and first release
 
@@ -123,7 +123,7 @@ Export year/activity/currency totals, reviewed and proposed amounts in separate 
 
 ## 7. Delivery phases and acceptance
 
-**Implementation disposition.** F1 funding and statement intake and F2 financial evidence intake are approved for implementation. F3–F5 have architectural approval for progressive implementation on the same funding, evidence and expense identities. Live billing-mail collection has a separate activation condition below. Agent file submission and isolated collector testing can proceed before credential enrollment.
+**Implementation disposition.** F1 funding and statement intake and F2 financial evidence intake are approved for implementation. F3–F5 are approved for sequential implementation on the same funding, evidence and expense identities. Live billing-mail collection has a separate activation condition below. Agent file submission and isolated collector testing can proceed before credential enrollment.
 
 | Phase | What the operator can do | Acceptance on synthetic records |
 | --- | --- | --- |
@@ -163,3 +163,10 @@ For the first statement pilot, select one authorized format and instrument and t
 The [financial intake runbook](../docs/financial-intake-operations.md) records the nine native entry points, protected credential enrollment, checkpoint inspection and revocation. Funding identities use the existing native context/ChangeSet path. Statements consume an owned encrypted attachment. Both acquisition channels retain original evidence in the existing protected attachment store. November 22, 2026 is the first admitted mailbox date. The operator has confirmed local application-password enrollment. Live provider, actual ChatGPT file and deployment acceptance are separate observations.
 
 F1/F2 shipped in [release PR 71](https://github.com/nkuhanas/Docket/pull/71). The [activation record](../evidence/financial-intake/activation.json) distinguishes synthetic, deployed, actual file-handoff and mailbox evidence.
+
+
+### F3–F5 adoption and acceptance
+
+Implement F3 before F4, then F5. Use typed native writes for amount-conserving matches, recurring expectations, expense treatments, tax payments and income evidence. Corrections identify the exact prior record. Keep existing intake declarations and settlement postings authoritative for their respective facts. A year-scoped review materializes actionable findings in existing attention cases. Persistent report snapshots retain exact inputs, amounts, coverage and the evidence index for replay. F3 joins observed money to existing costs and settlements. F4 evaluates costs independently of matching. F5 compares payroll and annual corroboration within the same payer, tax year, jurisdiction and currency.
+
+Exercise all stages with disposable synthetic records, including shared-card repayment, partial reimbursement/refund, split tender, mixed use, asset review, designated tax year, overlapping forms, corrected forms and repeated reconciliation. Apply the billing route's 100% declaration only to verified intake. The operator defers the controlled real sample and historical backfill. Their absence does not block synthetic acceptance or release. Report those gates separately.

@@ -26,6 +26,7 @@
       "tests/integration/test_document_allocations.py",
       "tests/integration/test_expenses.py",
       "tests/integration/test_financial_intake.py",
+      "tests/integration/test_financial_year.py",
       "tests/integration/test_work_reports.py",
       "tests/integration/test_workload.py",
       "tests/integration/test_workload_followup.py",

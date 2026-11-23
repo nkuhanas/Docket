@@ -148,6 +148,9 @@ class FinancialIntakeService:
         )
         if row is None:
             return None
+        if row.declarations.get("evidence_role") in ("income_document", "statement"):
+            row.status, row.reason = "complete", "original_retained_for_review"
+            return row
         # Storage faults roll back for retry. Extraction failures preserve the source.
         raw = attachment_store(self.session, self.settings).plaintext(row.source_ref)
         try:
@@ -321,6 +324,10 @@ class FinancialIntakeService:
         }
 
     def resolve(self, session: Session, changeset: Any, change: Any) -> list[str]:
+        from docket.services.financial_review import current_facts, legacy_matches, lock_review
+
+        owner = require_principal("commit").operator_ref
+        lock_review(session, owner)
         candidate = session.scalar(
             select(FinancialCandidate)
             .where(FinancialCandidate.ref_id == change.object_ref)
@@ -416,6 +423,16 @@ class FinancialIntakeService:
             )
             if activity is None:
                 raise rejected("activity_unavailable")
+            if any(
+                r.kind in ("activity_match", "tax_allocation")
+                and (
+                    activity.ref_id
+                    in (r.fields.get("activity_ref"), r.fields.get("counterpart_ref"))
+                    or (r.fields.get("expense_ref") == ref and r.fields.get("role") == "purchase")
+                )
+                for r in current_facts(session, owner)
+            ) or legacy_matches(session, owner).get(ref, set()) - {activity.ref_id}:
+                raise rejected("activity_link_conflict")
             posting = activity.fields
             cost = expenses.revision(expenses.head(ref, lock=True))
             if (

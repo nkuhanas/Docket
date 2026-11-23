@@ -24,6 +24,15 @@ from docket.schemas.evidence import FieldEvidenceInput
 from docket.schemas.expenses import ExpenseRef, ExpenseSpec
 from docket.schemas.financial_documents import DocumentRef, TimesheetSpec, TimesheetStatusSpec
 from docket.schemas.financial_intake import CandidateRef, ResolveEvidence
+from docket.schemas.financial_review import (
+    ActivityMatch,
+    AnnualReview,
+    ExpenseTreatment,
+    IncomeEvidence,
+    RecurringExpense,
+    TaxAllocation,
+    WithdrawFact,
+)
 from docket.schemas.followup import OperationalReminderSpec, WorkloadReconciliationSpec
 from docket.schemas.funding import (
     AccountRef,
@@ -597,6 +606,69 @@ def mutation_input_json(
 
     retain(value, result, patch=preserve_explicit_nulls)
     return result
+
+
+class ActivityMatchCreate(MutationBase):
+    mutation_type: Literal["activity_match_create"] = "activity_match_create"
+    action: Literal["create"]
+    object_type: Literal["activity_match"]
+    object_ref: None = None
+    create_spec: ActivityMatch
+    payload: None = None
+
+
+class RecurringExpenseCreate(MutationBase):
+    mutation_type: Literal["recurring_expense_create"] = "recurring_expense_create"
+    action: Literal["create"]
+    object_type: Literal["recurring_expense"]
+    object_ref: None = None
+    create_spec: RecurringExpense
+    payload: None = None
+
+
+class ExpenseTreatmentCreate(MutationBase):
+    mutation_type: Literal["expense_treatment_create"] = "expense_treatment_create"
+    action: Literal["create"]
+    object_type: Literal["expense_treatment"]
+    object_ref: None = None
+    create_spec: ExpenseTreatment
+    payload: None = None
+
+
+class TaxAllocationCreate(MutationBase):
+    mutation_type: Literal["tax_allocation_create"] = "tax_allocation_create"
+    action: Literal["create"]
+    object_type: Literal["tax_allocation"]
+    object_ref: None = None
+    create_spec: TaxAllocation
+    payload: None = None
+
+
+class IncomeEvidenceCreate(MutationBase):
+    mutation_type: Literal["income_evidence_create"] = "income_evidence_create"
+    action: Literal["create"]
+    object_type: Literal["income_evidence"]
+    object_ref: None = None
+    create_spec: IncomeEvidence
+    payload: None = None
+
+
+class FinancialWithdrawalCreate(MutationBase):
+    mutation_type: Literal["financial_withdrawal_create"] = "financial_withdrawal_create"
+    action: Literal["create"]
+    object_type: Literal["financial_withdrawal"]
+    object_ref: None = None
+    create_spec: WithdrawFact
+    payload: None = None
+
+
+class FinancialYearReviewCreate(MutationBase):
+    mutation_type: Literal["financial_year_review_create"] = "financial_year_review_create"
+    action: Literal["create"]
+    object_type: Literal["financial_year_review"]
+    object_ref: None = None
+    create_spec: AnnualReview
+    payload: None = None
 
 
 class FinancialCandidateModify(MutationBase):
@@ -1440,6 +1512,13 @@ type TrackedContextMutation = (
     | InvoicePrepare
     | InvoiceRefresh
     | InvoiceTransition
+    | ActivityMatchCreate
+    | RecurringExpenseCreate
+    | ExpenseTreatmentCreate
+    | TaxAllocationCreate
+    | IncomeEvidenceCreate
+    | FinancialWithdrawalCreate
+    | FinancialYearReviewCreate
     | FinancialCandidateModify
     | FundingAccountCreate
     | FundingAccountModify
@@ -1493,6 +1572,13 @@ type CanonicalMutation = (
     | InvoicePrepare
     | InvoiceRefresh
     | InvoiceTransition
+    | ActivityMatchCreate
+    | RecurringExpenseCreate
+    | ExpenseTreatmentCreate
+    | TaxAllocationCreate
+    | IncomeEvidenceCreate
+    | FinancialWithdrawalCreate
+    | FinancialYearReviewCreate
     | FinancialCandidateModify
     | FundingAccountCreate
     | FundingAccountModify
