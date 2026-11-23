@@ -1,6 +1,6 @@
 # Forward delta index
 
-Current specification: [SPEC 1.4](../SPEC.md).
+Current specification: [SPEC 1.5](../SPEC.md).
 
 | Delta | Adoption | Implementation |
 | --- | --- | --- |
@@ -8,12 +8,7 @@ Current specification: [SPEC 1.4](../SPEC.md).
 | [2026-11-05T21-18-26Z — work attribution and personal operations](2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md) | Adopted into SPEC 1.1 by Operator implementation instruction | Complete: C0, P0a/P0b, P1a–P1c, P2 and opt-in revision-pinned visibility implemented, deployed and host-accepted; tested-image activation, plugin 2.1.0 read-back and successful fresh ChatGPT work-context calls pass ([implementation evidence](../docs/work-attribution-implementation.md), [receipt](../evidence/work-attribution-release/activation.json), SPEC ADR 009). P3 requires its separate concrete provider delta |
 | [2026-11-06T17-59-26Z — Google Tasks and NocoDB retirement](2026-11-06T17-59-26Z-google-tasks-and-nocodb-retirement.md) | Adopted into SPEC 1.2 by Operator implementation goal | Complete: deployed from 4236a81e55fd (initial activation c7d25789ecfb): source-bound release/PostgreSQL checks and actual runtime method admission pass; same private plugin is 2.2.1. Exact NocoDB runtime/storage/images and fifteen aliases retired. Fresh ChatGPT Tasks context passes in the [host read receipt](../evidence/google-tasks-retirement/host-context.json). [Activation receipt](../evidence/google-tasks-retirement/activation.json) and [acceptance matrix](../docs/google-tasks-implementation.md) include successful [native write journeys](../evidence/google-tasks-retirement/native-journey.json). Intended-device popup and exact fixture cleanup pass in the [device receipt](../evidence/google-tasks-retirement/device-acceptance.json). JSON/CSV exports pass release and fresh host acceptance, with eight rows and thirteen fields confirmed by the actual v69 invocation in the [final receipt](../evidence/google-tasks-retirement/exports-activation.json). All R0/G0/G1/G2/G3/R1/A milestones are complete |
 | [2026-11-22T22-08-43Z — financial ingestion and tax records](2026-11-22T22-08-43Z-financial-ingestion-and-tax-records.md) | F1/F2 adopted in SPEC 1.3. F3–F5 adopted in SPEC 1.4, implementation and synthetic verification tracked separately. | Funding and shared intake deployed at 53cfd88, private plugin 2.3.0. ChatGPT file upload and live Purelymail collection verified, including original bytes, the standing declaration and replay. [Activation evidence](../evidence/financial-intake/activation.json). |
-
-## Proposals
-
-| Proposal | Review status |
-| --- | --- |
-| [2026-11-22T21-38-05Z — issue an invoice when preparing its export](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Revised against SPEC 1.4. Preparing the final JSON, Markdown or CSV issues the invoice once. Reopening and reissuing retain its number and financial history. Implementation paused. |
+| [2026-11-22T21-38-05Z — issue an invoice when preparing its export](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Adopted in SPEC 1.5. | Final exports, editable numbered invoices and revision-pinned settlement. |
 
 ## Historical notes
 

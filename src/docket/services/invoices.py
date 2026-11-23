@@ -46,6 +46,7 @@ from docket.services.expenses import ExpenseService
 from docket.services.financial_documents import FinancialDocumentService, document_error
 from docket.services.invoice_claims import InvoiceClaimPlanner
 from docket.services.native_commands import NativeCommandService
+from docket.services.settlement import SettlementService
 
 INVOICE_COMMAND_MODELS: dict[str, type[BaseModel]] = {
     "docket_prepare_invoice": PrepareInvoice,
@@ -117,7 +118,9 @@ class InvoiceService:
             "summary": body["summary"],
             "claim_count": len(body["claim_refs"]),
             "allocation_count": len(body["allocation_refs"]),
-            "number": number.number if number and revision.status == "issued" else None,
+            "number": number.number
+            if number and (revision.status == "issued" or body.get("issued_at"))
+            else None,
             "due_on": header.get("due_on"),
             "client_label": header["client_label"][:200],
             "reconciliation_flags": self.flags(revision),
@@ -138,9 +141,29 @@ class InvoiceService:
             "detail": {"tool": "docket_read_document", "ref": revision.ref_id},
         }
 
+    def converged(self, head: FinancialDocument, expected: int | None, change: Any) -> bool:
+        """Only an intervening transition to this same desired state can be replayed."""
+        if (
+            change.mutation_type != "invoice_transition"
+            or expected != head.version - 1
+            or head.status not in {"draft", "issued"}
+        ):
+            return False
+        desired = InvoiceStatusSpec.model_validate(change.payload).status
+        if desired != head.status:
+            return False
+        prior = self.session.scalar(
+            select(FinancialDocumentRevision.status).where(
+                FinancialDocumentRevision.document_ref == head.ref_id,
+                FinancialDocumentRevision.revision == expected,
+            )
+        )
+        return prior in {"draft", "issued"} and prior != desired
+
     def apply(self, changeset: Any, change: Any) -> list[str]:
+        SettlementService(self.session).lock_ledger()
         head = self.head(change.object_ref, lock=True) if change.object_ref else None
-        if head:
+        if head and not self.converged(head, changeset.expected_versions.get(head.ref_id), change):
             self.work.check_version(head, changeset)
         previous = self.documents.revision(head) if head else None
         if change.mutation_type == "invoice_transition":
@@ -190,6 +213,9 @@ class InvoiceService:
                 version=1,
                 created_by_changeset_ref=changeset.ref_id,
             )
+        number = self.session.get(InvoiceNumber, head.ref_id)
+        if number and (spec.parameters.number_series or "INV") != number.series:
+            raise document_error("invoice_series_final", "Keep the issued invoice number series.")
         plan = self.planner.plan(head, evaluation, spec, changeset.ref_id)
         if previous:
             head.version += 1
@@ -218,6 +244,11 @@ class InvoiceService:
             date_to=date.fromisoformat(evaluation.parameters_json["date_to"]),
             timezone=evaluation.parameters_json["timezone"],
             snapshot_json={
+                **(
+                    {"issued_at": previous.snapshot_json["issued_at"]}
+                    if previous and previous.snapshot_json.get("issued_at")
+                    else {}
+                ),
                 "engagement_label": engagement.label,
                 "header": header,
                 "summary": plan.summary(),
@@ -242,6 +273,14 @@ class InvoiceService:
         self.claims.apply(plan.claims, revision)
         self.allocations.persist(plan.allocations, revision)
         self.work.audit(head, revision.ref_id, changeset, change)
+        if spec.format:
+            return self.transition(
+                head,
+                revision,
+                InvoiceStatusSpec(status="issued", issued_at=spec.issue_at, format=spec.format),
+                changeset,
+                change,
+            )
         return [head.ref_id, revision.ref_id]
 
     def transition(
@@ -278,7 +317,12 @@ class InvoiceService:
             self.session.flush()
             self.work.audit(head, observation.ref_id, changeset, change)
             return [head.ref_id, observation.ref_id]
-        if head.status != "draft":
+        if spec.status == head.status and spec.status in {"draft", "issued"}:
+            return [head.ref_id, previous.ref_id]
+        reopening = head.status == "issued" and spec.status == "draft"
+        if (head.status != "draft" and not reopening) or (
+            spec.status == "cancelled" and previous.snapshot_json.get("issued_at")
+        ):
             raise document_error(
                 "invoice_snapshot_final",
                 "An issued invoice needs an explicit credit or adjustment.",
@@ -299,7 +343,11 @@ class InvoiceService:
         self.session.flush()
         body = {**previous.snapshot_json}
         if spec.status == "issued":
-            body["issued_at"] = spec.issued_at.isoformat() if spec.issued_at else None
+            assert spec.issued_at is not None
+            if body.get("issued_at"):
+                body["reissued_at"] = spec.issued_at.isoformat()
+            else:
+                body["issued_at"] = spec.issued_at.isoformat()
         revision = FinancialDocumentRevision(
             document_ref=head.ref_id,
             revision=head.version,
@@ -317,14 +365,27 @@ class InvoiceService:
         )
         self.session.add(revision)
         self.session.flush()
+        if reopening:
+            self.work.audit(head, revision.ref_id, changeset, change)
+            return [head.ref_id, revision.ref_id]
+        retired_keys: set[str] = set()
+        if spec.status == "issued" and previous.snapshot_json.get("issued_at"):
+            retired_keys = self.allocations.retire_superseded(revision)
         self.allocations.transition(
             head.ref_id, "issued" if spec.status == "issued" else "released", revision
         )
         self.claims.transition(head, revision)
         if spec.status == "issued":
             self.allocations.number(revision, previous.snapshot_json["header"]["number_series"])
+        settlement_refs = (
+            SettlementService(self.session).release_invoice_excess(
+                retired_keys, head.ref_id, revision.ref_id, changeset, change
+            )
+            if retired_keys
+            else []
+        )
         self.work.audit(head, revision.ref_id, changeset, change)
-        return [head.ref_id, revision.ref_id]
+        return [head.ref_id, revision.ref_id, *settlement_refs]
 
 
 class InvoiceCommandService(NativeCommandService):
@@ -357,6 +418,7 @@ class InvoiceCommandService(NativeCommandService):
                     ],
                     payload=InvoiceStatusSpec(
                         status=public.status,
+                        format=public.format,
                         note=public.note,
                         observed_at=instant(public.observed_at) if public.observed_at else None,
                         issued_at=utc_now() if public.status == "issued" else None,
@@ -423,6 +485,10 @@ class InvoiceCommandService(NativeCommandService):
                     evaluation, parameters, document_ref, list(fees), lock=False
                 )
                 spec = InvoiceSpec(
+                    format=public.format if isinstance(public, PrepareInvoice) else None,
+                    issue_at=utc_now()
+                    if isinstance(public, PrepareInvoice) and public.format
+                    else None,
                     document_key=document_ref.split("_", 1)[1],
                     engagement_ref=eng,
                     component_key=component,

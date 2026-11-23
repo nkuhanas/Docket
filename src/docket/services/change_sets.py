@@ -778,6 +778,13 @@ class ChangeSetService:
                             "reconciliation_flags": state["reconciliation_flags"],
                             "detail": {"tool": "docket_read_document", "ref": ref},
                         })
+                        payload = change.create_spec or change.payload
+                        export_format = getattr(payload, "format", None)
+                        if export_format and state["status"] == "issued":
+                            from docket.services.financial_document_reads import DocumentCursor
+                            receipt.financial_documents[-1]["export_cursor"] = DocumentCursor(
+                                revision_ref=state["revision_ref"], format=export_format
+                            ).encode()
             if change.object_type == "work_session":
                 from docket.domain.work_time import elapsed_us
                 from docket.models import WorkSession
@@ -2509,16 +2516,20 @@ class ChangeSetService:
                                 }
                             )
                         elif current_version != expected_version:
-                            errors.append(
-                                {
-                                    "code": "version_conflict",
-                                    "details": {
-                                        "object_ref": change.object_ref,
-                                        "expected_version": expected_version,
-                                        "current_version": current_version,
-                                    },
-                                }
-                            )
+                            from docket.services.invoices import InvoiceService
+                            if change.mutation_type != "invoice_transition" or not InvoiceService(
+                                self.session
+                            ).converged(target, expected_version, change):
+                                errors.append(
+                                    {
+                                        "code": "version_conflict",
+                                        "details": {
+                                            "object_ref": change.object_ref,
+                                            "expected_version": expected_version,
+                                            "current_version": current_version,
+                                        },
+                                    }
+                                )
                 for referenced_ref in sorted(_nested_public_refs(_change_payload(change))):
                     planned_change_id = planned_refs.get(referenced_ref)
                     if planned_change_id is not None:

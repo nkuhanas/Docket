@@ -114,9 +114,10 @@ class FinancialDocumentReadService:
                 "allocation_refs": body["allocation_refs"],
                 "header": body["header"],
                 "issued_at": body.get("issued_at"),
+                **({"reissued_at": body["reissued_at"]} if "reissued_at" in body else {}),
                 "invoice_calculation_version": body.get("invoice_calculation_version"),
                 "number": number.number
-                if number and number.issued_revision_ref == revision.ref_id
+                if number and (revision.status == "issued" or body.get("issued_at"))
                 else None,
                 "lines": body["lines"],
                 "policy_basis": evaluation.result_json["basis"],

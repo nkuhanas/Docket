@@ -1,6 +1,6 @@
 # Docket — issue an invoice when preparing its export
 
-**Revised proposal, November 23, 2026. Implementation paused.** Baseline [SPEC 1.4](../SPEC.md), source `452613e`. This replaces the November 22 artifact-registration proposal in place.
+**Adopted in SPEC 1.5, November 23, 2026.** Baseline [SPEC 1.4](../SPEC.md), source `452613e`. This replaces the November 22 artifact-registration proposal in place.
 
 “Prepare my Ghost invoice as Markdown” should produce a numbered, issued invoice in that format. “Give me the CSV too” should return the same invoice, number and total. The operator can edit it and prepare a corrected version under the same number. A PDF or other external rendition can stay wherever the agent created it. This workflow adds zero tools and requires no return trip with the finished file.
 

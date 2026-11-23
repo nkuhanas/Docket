@@ -140,13 +140,31 @@ class FinancialSourceService:
             .join(latest, (latest.c.ref_id == r.ref_id) & (latest.c.n == 1))
         ).all()
         for head, revision in documents:
+            head_version = revision.revision
+            head_status = revision.status
+            if (
+                head.kind == "invoice"
+                and revision.status == "draft"
+                and revision.snapshot_json.get("issued_at")
+            ):
+                # Settle against the last posted basis while observing the editable head version.
+                revision = self.session.scalars(
+                    select(r)
+                    .where(
+                        r.document_ref == head.ref_id,
+                        r.status == "issued",
+                        r.revision < head_version,
+                    )
+                    .order_by(r.revision.desc())
+                    .limit(1)
+                ).one()
             summary = revision.snapshot_json.get("summary", {})
             target = {
                 "ref": head.ref_id,
                 "kind": head.kind,
-                "status": revision.status,
+                "status": head_status,
                 "revision_ref": revision.ref_id,
-                "version": revision.revision,
+                "version": head_version,
                 "engagement_ref": head.engagement_ref,
                 "date_from": revision.date_from.isoformat(),
                 "date_to": revision.date_to.isoformat(),

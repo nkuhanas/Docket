@@ -144,8 +144,8 @@ def transition(_mapper: object, _connection: object, target: DocumentAllocation)
         or not old_version
         or not old_status
         or target.version != old_version[0] + 1
-        or old_status[0] != "reserved"
-        or target.status not in {"issued", "released"}
+        or (old_status[0], target.status)
+        not in {("reserved", "released"), ("reserved", "issued"), ("issued", "released")}
     ):
         immutable(_mapper, _connection, target)
 

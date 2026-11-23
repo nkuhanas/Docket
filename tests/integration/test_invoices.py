@@ -431,3 +431,199 @@ async def test_invoice_contracts_and_read_only_denial(linked_plugin):
             },
         )
         assert denied["error"]["code"] == "agent_authority_denied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_final_exports_reopen_and_correct_a_paid_invoice(linked_plugin, session_factory):
+    from test_settlement import export_finance, financial_change
+
+    async with work_client(linked_plugin) as call:
+        eng, work = await fixture_work(call, "issue-export", 75)
+        args = dict(
+            engagement_ref=eng,
+            date_from="2026-11-02",
+            date_to="2026-11-09",
+            format="markdown",
+            context_id=(await call("docket_get_work_context", {"refs": [eng]}))["context_id"],
+            operation_id="final-export",
+        )
+        first = await call("docket_prepare_invoice", args)
+        assert first.get("disposition") == "committed", first
+        original = first["documents"][0]
+        assert original["status"] == "issued" and original["number"] == "INV-000001"
+        original_bytes = await export_document(call, original["revision_ref"], "json")
+        ref = original["ref"]
+        exported = await call("docket_read_document", {"cursor": original["export_cursor"]})
+        assert exported["format"] == "markdown" and "100.00 USD" in exported["content"]
+        assert (await call("docket_prepare_invoice", args))["documents"] == first["documents"]
+        regenerated = await change(
+            call,
+            "docket_update_invoice",
+            [ref],
+            "again-csv",
+            invoice_ref=ref,
+            status="issued",
+            format="csv",
+        )
+        assert regenerated["documents"][0]["revision_ref"] == original["revision_ref"]
+        assert (
+            await call(
+                "docket_read_document", {"cursor": regenerated["documents"][0]["export_cursor"]}
+            )
+        )["format"] == "csv"
+        await financial_change(
+            call,
+            "docket_record_payment",
+            [ref],
+            "invoice-paid-40",
+            amount="40",
+            currency="USD",
+            target_ref=ref,
+        )
+        for minutes, gross, due, excess in [(67.5, "90", "50", "0"), (15, "20", "0", "20")]:
+
+            async def edit(tool, key, prefix=gross, **fields):
+                return (
+                    await change(
+                        call, tool, [ref], f"inv-edit-{prefix}-{key}", invoice_ref=ref, **fields
+                    )
+                )["documents"][0]
+
+            reopened = await edit("docket_update_invoice", "open", status="draft")
+            assert reopened["number"] == original["number"]
+            assert (await edit("docket_update_invoice", "open2", status="draft"))[
+                "revision_ref"
+            ] == reopened["revision_ref"]
+            edited = await edit("docket_refresh_invoice", "correct", max_work_minutes=minutes)
+            before, _ = await export_finance(call, [ref])
+            previous = next(r for r in json.loads(before)["rows"] if r["record_type"] == "claim")
+            assert previous["gross_claim"] == ("100" if minutes == 67.5 else "90")
+            assert edited["gross_estimates"][0]["amount"] == gross + ".00"
+            quantities = (await call("docket_get_work_context", {"refs": [work]}))["objects"][0][
+                "state"
+            ]["claim_quantities"]["components"][0]
+            assert (
+                quantities["invoice_reserved_us"] + quantities["invoiced_us"]
+                <= quantities["known_us"]
+            )
+            fixed = await edit("docket_update_invoice", "reissue", status="issued", format="json")
+            assert fixed["number"] == original["number"]
+            after, _ = await export_finance(call, [ref])
+            total = next(
+                r for r in json.loads(after)["rows"] if r["record_type"] == "currency_total"
+            )
+            assert (total["gross_claim"], total["outstanding"], total["unapplied"]) == (
+                gross,
+                due,
+                excess,
+            )
+            assert total["received"] == "40"
+            assert await export_document(call, original["revision_ref"], "json") == original_bytes
+        with session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(InvoiceNumber)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_invalid_final_export_is_atomic_and_preview_read_is_passive(
+    linked_plugin, session_factory
+):
+    async with work_client(linked_plugin) as call:
+        eng, _ = await fixture_work(call, "export-missing", configured=False)
+        ctx = await call("docket_get_work_context", {"refs": [eng]})
+        args = dict(
+            engagement_ref=eng,
+            context_id=ctx["context_id"],
+            operation_id="bad-export",
+            format="json",
+            date_from="2026-11-02",
+            date_to="2026-11-09",
+        )
+        preview = await call("docket_prepare_invoice", {**args, "preview": True})
+        assert preview["disposition"] == "prepared"
+        denied = await call("docket_apply_change", {"change_id": preview["change_id"]})
+        assert denied["error"]["code"] == "invoice_needs_reconciliation"
+        with session_factory() as session:
+            for table in (FinancialDocument, InvoiceNumber, WorkClaim, DocumentAllocation):
+                assert session.scalar(select(func.count()).select_from(table)) == 0
+        draft = await change(
+            call, "docket_prepare_invoice", [eng], "draft-peek", engagement_ref=eng
+        )
+        data = json.loads(await export_document(call, draft["documents"][0]["ref"], "json"))
+        assert data["status"] == "draft" and data["number"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_invoice_payment_follows_replaced_lines_and_stale_issue_cannot_skip_edit(
+    linked_plugin,
+):
+    from test_settlement import export_finance, financial_change
+
+    async with work_client(linked_plugin) as call:
+        eng, work = await fixture_work(call, "replace-line", 75)
+        invoice = await change(
+            call,
+            "docket_prepare_invoice",
+            [eng, work],
+            "old-work",
+            engagement_ref=eng,
+            work_refs=[work],
+            format="csv",
+        )
+        ref = invoice["documents"][0]["ref"]
+        await financial_change(
+            call,
+            "docket_record_payment",
+            [ref],
+            "paid-old-work",
+            amount="40",
+            currency="USD",
+            target_ref=ref,
+        )
+        await change(
+            call, "docket_update_invoice", [ref], "reopen-lines", invoice_ref=ref, status="draft"
+        )
+        stale = await change(
+            call,
+            "docket_update_invoice",
+            [ref],
+            "stale-before-edit",
+            invoice_ref=ref,
+            status="issued",
+            preview=True,
+        )
+        other = await change(
+            call,
+            "docket_log_work_session",
+            [eng],
+            "new-work",
+            description="Synthetic replacement",
+            engagement_ref=eng,
+            duration_minutes=60,
+            work_date="2026-11-03",
+            reported_compensation_class="billable",
+        )
+        other_ref = other["work_records"][0]["ref"]
+        await change(
+            call,
+            "docket_refresh_invoice",
+            [ref, other_ref],
+            "replace-line-selection",
+            invoice_ref=ref,
+            work_refs=[other_ref],
+        )
+        assert (await call("docket_apply_change", {"change_id": stale["change_id"]})).get(
+            "disposition"
+        ) != "committed"
+        await change(
+            call, "docket_update_invoice", [ref], "issue-new-work", invoice_ref=ref, status="issued"
+        )
+        report, _ = await export_finance(call, [ref])
+        total = next(r for r in json.loads(report)["rows"] if r["record_type"] == "currency_total")
+        assert (total["gross_claim"], total["cash_applied"], total["outstanding"]) == (
+            "80",
+            "40",
+            "40",
+        )
