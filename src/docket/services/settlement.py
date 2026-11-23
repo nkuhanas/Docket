@@ -559,13 +559,16 @@ class SettlementService:
             },
         )
 
-    def apply(self, session: Session, changeset: Any, change: Any) -> list[str]:
+    def lock_ledger(self) -> None:
         principal = require_principal("commit")
         if self.session.get_bind().dialect.name == "postgresql":
             self.session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
                 {"key": "financial-ledger:" + principal.operator_ref},
             )
+
+    def apply(self, session: Session, changeset: Any, change: Any) -> list[str]:
+        self.lock_ledger()
         spec = SettlementSpec.model_validate(change.create_spec)
         parameters = self.normalize(spec)
         if spec.command == "receipt":
@@ -651,17 +654,86 @@ class SettlementService:
                 code="financial_no_new_posting",
                 message="There is no available amount to post; existing records remain unchanged.",
             )
+        return self.persist(txn_ref, spec.command, parameters, payment, pending, changeset, change)
+
+    def release_invoice_excess(
+        self, keys: set[str], invoice_ref: str, revision_ref: str, changeset: Any, change: Any
+    ) -> list[str]:
+        txn_ref = new_public_ref("ftxn")
+        pending: list[FinancialEntry] = []
+        state = FinancialState(self.session)
+        # A correction may replace a billed line entirely. Carry explicitly
+        # invoice-directed cash onto the corrected lines, within the same currency.
+        target_parts = {part.ref for part in state.target_parts(invoice_ref)}
+        carry: dict[str, Fraction] = {}
+        for entry in state.entries:
+            if entry.kind != "cash" or entry.target_ref != invoice_ref or not entry.payment_ref:
+                continue
+            matched = state.match.matches.get(entry.ref_id, {})
+            on_invoice = sum(
+                (amount for ref, amount in matched.items() if ref in target_parts), Fraction(0)
+            )
+            amount = state.effective[entry.ref_id] - on_invoice
+            if amount > 0:
+                pending.append(
+                    self.reverse_entry(txn_ref, entry, amount, "Corrected invoice basis.")
+                )
+                carry[entry.payment_ref] = carry.get(entry.payment_ref, Fraction(0)) + amount
+        state = self.release_excess(txn_ref, pending, source_keys=keys)
+        for ref, amount in sorted(carry.items()):
+            payment = self.owned(Payment, ref, lock=True)
+            due = sum(
+                (
+                    state.match.outstanding[p.ref]
+                    for p in state.target_parts(invoice_ref, payment.currency)
+                ),
+                Fraction(0),
+            )
+            if due > 0:
+                self.allocate(
+                    txn_ref,
+                    payment,
+                    invoice_ref,
+                    min(amount, due),
+                    Fraction(0),
+                    None,
+                    "Retained payment on corrected invoice.",
+                    pending,
+                )
+                state = FinancialState(self.session, extra=pending)
+        if not pending:
+            return []
+        return self.persist(
+            txn_ref,
+            "reversal",
+            {"invoice_ref": invoice_ref, "revision_ref": revision_ref},
+            None,
+            pending,
+            changeset,
+            change,
+        )
+
+    def persist(
+        self,
+        txn_ref: str,
+        command: str,
+        parameters: dict[str, Any],
+        payment: Payment | None,
+        pending: list[FinancialEntry],
+        changeset: Any,
+        change: Any,
+    ) -> list[str]:
         final = FinancialState(self.session, extra=pending)
         touched = {row.payment_ref for row in pending if row.payment_ref}
         for ref in sorted(touched):
             head = self.owned(Payment, ref, lock=True)
-            if head is not payment or spec.command != "receipt":
+            if head is not payment or command != "receipt":
                 head.version += 1
                 head.updated_at = utc_now()
         self.session.flush()
         outcome = {
             "ref": txn_ref,
-            "kind": spec.command,
+            "kind": command,
             "entries": [row.ref_id for row in pending],
             "payments": [
                 {
@@ -678,8 +750,8 @@ class SettlementService:
         }
         txn = FinancialTransaction(
             ref_id=txn_ref,
-            operator_ref=principal.operator_ref,
-            kind=spec.command,
+            operator_ref=require_principal("commit").operator_ref,
+            kind=command,
             payment_ref=payment.ref_id if payment else None,
             payment_version=payment.version if payment else None,
             parameters_json=parameters,

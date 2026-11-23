@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from docket.agent_auth import require_principal
 from docket.domain.compensation import allocate
 from docket.domain.errors import DocketError
+from docket.domain.financial_pricing import remaining_ranges
 from docket.domain.public_refs import new_public_ref
 from docket.models import (
     CompensationEvaluation,
@@ -306,16 +307,21 @@ class WorkClaimService:
         ).all()
         for span in spans:
             key = f"work:{span.origin_ref}:{component}"
-            for allocation in allocations:
-                if allocation.source_key == key:
-                    overlap = max(
-                        0,
-                        min(span.end, int(allocation.end_units))
-                        - max(span.start, int(allocation.start_units)),
-                    )
-                    result[
-                        "invoice_reserved_us" if allocation.status == "reserved" else "invoiced_us"
-                    ] += overlap
+            issued = [
+                (int(a.start_units), int(a.end_units))
+                for a in allocations
+                if a.source_key == key and a.status == "issued"
+            ]
+            unissued = remaining_ranges(span.start, span.end, issued)
+            result["invoiced_us"] += span.quantity - sum(end - start for start, end in unissued)
+            reserved = [
+                (int(a.start_units), int(a.end_units))
+                for a in allocations
+                if a.source_key == key and a.status == "reserved"
+            ]
+            for start, end in unissued:
+                free = remaining_ranges(start, end, reserved)
+                result["invoice_reserved_us"] += end - start - sum(hi - lo for lo, hi in free)
         result["uninvoiced_us"] = (
             result["known_us"] - result["invoice_reserved_us"] - result["invoiced_us"]
         )

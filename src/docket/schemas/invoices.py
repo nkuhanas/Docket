@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from docket.schemas.common import StrictModel
 from docket.schemas.compensation import ComponentKey
@@ -33,7 +33,11 @@ class InvoiceFields(StrictModel):
     notes: str | None = Field(default=None, max_length=4000)
 
 
+InvoiceFormat = Literal["json", "csv", "markdown"]
+
+
 class PrepareInvoice(InvoiceFields, CommandBase):
+    format: InvoiceFormat | None = None
     engagement_ref: EngagementRef
     component_key: ComponentKey = "base"
     amends_ref: DocumentRef | None = None
@@ -44,16 +48,25 @@ class RefreshInvoice(InvoiceFields, CommandBase):
 
 
 class UpdateInvoice(CommandBase):
+    format: InvoiceFormat | None = None
     invoice_ref: DocumentRef
-    status: Literal["issued", "cancelled", "delivered"]
+    status: Literal["draft", "issued", "cancelled", "delivered"]
     note: str | None = Field(default=None, max_length=4000)
     observed_at: datetime | None = Field(
         default=None,
         description="Reported delivery time; omit unknown. Issue uses a retained server instant.",
     )
 
+    @model_validator(mode="after")
+    def final_export(self) -> "UpdateInvoice":
+        if self.format and self.status != "issued":
+            raise ValueError("A final export requires status=issued.")
+        return self
+
 
 class InvoiceSpec(StrictModel):
+    format: InvoiceFormat | None = None
+    issue_at: datetime | None = None
     document_key: str = Field(pattern=r"^[0-9A-HJKMNP-TV-Z]{26}$")
     engagement_ref: EngagementRef
     component_key: ComponentKey = "base"
@@ -69,21 +82,20 @@ class InvoiceSpec(StrictModel):
 
 
 class InvoiceStatusSpec(StrictModel):
-    status: Literal["issued", "cancelled", "delivered"]
+    format: InvoiceFormat | None = None
+    status: Literal["draft", "issued", "cancelled", "delivered"]
     note: str | None = None
     observed_at: datetime | None = None
     issued_at: datetime | None = None
 
 
 INVOICE_TOOL_PURPOSES = {
-    "docket_prepare_invoice": "Draft an engagement's uninvoiced work and optional expenses. "
-    "Dates/selection/maximum minutes and invoice terms are ordinary flat fields. "
-    "A canonical draft reserves its exact remaining quantities; preview reserves nothing. "
-    "Unknown rates stay unresolved. Does not issue, send or record payment.",
-    "docket_refresh_invoice": "Regenerate a draft invoice from current work/terms and supplied "
-    "header or selection changes; omitted fields retain prior choices. Releases/replaces "
-    "reservations atomically. Issued snapshots cannot be refreshed.",
-    "docket_update_invoice": "Issue or cancel a draft invoice, or record reported manual "
-    "delivery of an issued invoice. Issue retains a unique number and exact monetary snapshot. "
-    "Delivered is an observation, not provider success. No transmission or payment effect.",
+    "docket_prepare_invoice": "Prepare an invoice for remaining billable work and expenses. "
+    "Set format to issue and export JSON, CSV or Markdown. Omit format for a draft. "
+    "Preview reserves nothing. Follow the returned export cursor.",
+    "docket_refresh_invoice": "Edit a draft invoice using current work and terms. Omitted "
+    "fields retain prior choices. Reopen an issued invoice before editing.",
+    "docket_update_invoice": "Set issued or draft idempotently. Optional format on issue "
+    "returns a final export. Reopening retains the number and last issued balance. "
+    "Cancel an unissued draft or record reported delivery independently.",
 }

@@ -546,9 +546,10 @@ async def check_compensation_policies(settings, factory, principal):
         assert "80.123456789" not in json.dumps(rows, default=str)
 
 
-async def check_native_invoices(settings, factory, principal):
+async def check_native_invoices(settings, factory, principal, config):
     from docket.agent_auth import AgentCallContext, agent_call_context
     from docket.models import (
+        DocumentAllocation,
         FinancialDocumentObservation,
         FinancialDocumentRevision,
         InvoiceNumber,
@@ -571,6 +572,8 @@ async def check_native_invoices(settings, factory, principal):
         assert result.get("disposition") in {"committed", "prepared"}, result
         return result
 
+    # Seed an ordinary numbered invoice using the previous release's database guards.
+    command.downgrade(config, "20261123a1b2")
     engagement = await change(
         "docket_create_engagement",
         [],
@@ -659,6 +662,7 @@ async def check_native_invoices(settings, factory, principal):
                 FinancialDocumentRevision.ref_id == issued_revision
             )
         )
+    command.upgrade(config, "head")
     delivery = await change(
         "docket_update_invoice",
         [ref],
@@ -766,6 +770,100 @@ async def check_native_invoices(settings, factory, principal):
             assert "immutable" in str(exc.orig)
         else:
             raise AssertionError("PostgreSQL allowed rewriting reported invoice delivery")
+
+    async def desired_race(status, label):
+        proposals = [
+            await change(
+                "docket_update_invoice",
+                [ref],
+                f"pg-{label}-{i}",
+                invoice_ref=ref,
+                status=status,
+                preview=True,
+                **({"format": "csv"} if status == "issued" else {}),
+            )
+            for i in (1, 2)
+        ]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(apply, proposals))
+        assert all(row.get("disposition") == "committed" for row in outcomes), outcomes
+        docs = [row["documents"][0] for row in outcomes]
+        assert (
+            docs[0]["revision_ref"] == docs[1]["revision_ref"]
+            and docs[0]["number"] == "PG-NATIVE-000001"
+        )
+        return docs[0]
+
+    await desired_race("draft", "reopen")
+    # Apply money while the correction is open. The ledger uses the last issued basis.
+    packet = await call("docket_get_financial_context", {"refs": [ref]})
+    payment = await call(
+        "docket_record_payment",
+        {
+            "operation_id": "pg-invoice-prior-cash",
+            "context_id": packet["context_id"],
+            "amount": "80",
+            "currency": "USD",
+            "target_ref": ref,
+        },
+    )
+    assert payment.get("disposition") == "committed", payment
+    await change(
+        "docket_refresh_invoice", [ref], "pg-cut-invoice", invoice_ref=ref, max_work_minutes=30
+    )
+    # A draft can propose edits over its previous issue, but two active issues
+    # cannot consume the same units even through a direct database writer.
+    try:
+        with factory.begin() as session:
+            session.execute(
+                update(DocumentAllocation)
+                .where(
+                    DocumentAllocation.document_ref == ref, DocumentAllocation.status == "reserved"
+                )
+                .values(status="issued", version=DocumentAllocation.version + 1)
+            )
+    except DBAPIError as exc:
+        assert "overlaps another active issue" in str(exc.orig)
+    else:
+        raise AssertionError("PostgreSQL allowed duplicate posting of a corrected source range")
+    fixed = await desired_race("issued", "corrected-issue")
+    assert fixed["gross_estimates"][0]["amount"] == "40.00"
+    export = await call("docket_read_document", {"cursor": fixed["export_cursor"]})
+    assert export["format"] == "csv" and "PG-NATIVE-000001" in export["content"]
+    pay_ref = payment["financial_records"][0]["payments"][0]["ref"]
+    balance = await call("docket_get_financial_context", {"refs": [pay_ref], "format": "json"})
+    content = balance["content"]
+    while not balance["complete"]:
+        balance = await call("docket_get_financial_context", {"cursor": balance["next_cursor"]})
+        content += balance["content"]
+    assert any(
+        row.get("ref") == pay_ref and row.get("unapplied") == "40"
+        for row in json.loads(content)["rows"]
+    ), content
+    with factory() as session:
+        assert (
+            session.scalar(
+                select(FinancialDocumentRevision.snapshot_json).where(
+                    FinancialDocumentRevision.ref_id == issued_revision
+                )
+            )
+            == frozen
+        )
+
+    # Released source time can fund a fresh final-export invoice once.
+    final = await change(
+        "docket_prepare_invoice",
+        [eng],
+        "pg-final-export",
+        engagement_ref=eng,
+        number_series="PG-NATIVE",
+        format="markdown",
+        date_from="2026-11-02",
+        date_to="2026-11-09",
+        expense_refs=[],
+    )
+    assert final["documents"][0]["number"] == "PG-NATIVE-000002"
+    assert final["documents"][0]["gross_estimates"][0]["amount"] == "200.00"
 
 
 async def check_document_allocations(settings, factory, principal):
@@ -2110,7 +2208,7 @@ async def check():
     await check_financial_documents(settings, factory, principal)
     await check_expenses(settings, factory, principal)
     await check_document_allocations(settings, factory, principal)
-    await check_native_invoices(settings, factory, principal)
+    await check_native_invoices(settings, factory, principal, config)
     from settlement_postgres_check import check_settlement
 
     settlement_evidence = await check_settlement(settings, factory, principal)
@@ -2313,7 +2411,7 @@ async def check():
     try:
         command.downgrade(config, "20261104e3f4")
     except RuntimeError as exc:
-        assert str(exc) == "Retained financial workpapers prevent downgrade"
+        assert str(exc) == "Retained invoice corrections prevent downgrade"
     else:
         raise AssertionError("Downgrade discarded populated work history")
     from alembic.runtime.migration import MigrationContext
@@ -2321,7 +2419,7 @@ async def check():
     from docket.models import TaskReminderAuthority
 
     with engine.connect() as connection:
-        assert MigrationContext.configure(connection).get_current_revision() == "20261123a1b2"
+        assert MigrationContext.configure(connection).get_current_revision() == "20261123b2c3"
     with factory() as session:
         assert session.scalar(select(TaskReminderAuthority.generation_ref).limit(1))
         assert session.scalar(select(WorkSession.id).limit(1))
@@ -2349,6 +2447,7 @@ async def check():
                 "expense_import_race_exact_totals_and_frozen_approval": "passed",
                 "expense_owner_and_report_immutability": "passed",
                 "partial_invoice_allocation_race_and_numbering": "passed",
+                "invoice_number_continuity_reissue_races_and_excess_cash": "passed",
                 "native_invoice_preview_race_refresh_issue_delivery_and_lineage": "passed",
                 "compensation_owner_isolation_and_privacy": "passed",
                 "composite_time_precision_and_sealing": "passed",

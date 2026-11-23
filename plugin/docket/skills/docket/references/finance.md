@@ -46,6 +46,13 @@ max_work_minutes and expenses. Omit expense_refs for related dated costs, or use
 [] to exclude them. Docket derives remaining claim quantities and exact marginal
 prices, including overtime, while preserving timesheet references to the same work.
 Missing rates can remain in a draft; only affected finalization is blocked.
+For a final invoice, set format to json, csv or markdown on prepare. This issues
+once and returns documents[0].export_cursor for docket_read_document. For an
+existing invoice use docket_update_invoice with its invoice_ref, status=issued
+and the requested format. Reuse the exact revision to regenerate another format.
+Set status=draft to reopen under the same number. The last issued balance remains
+collectible during edits. Reissue the correction to update the balance. Cash already
+received is preserved, and excess applied cash becomes available again.
 Use `docket_refresh_invoice` after correcting draft work/terms or to change supplied
 selection/header fields. Omitted fields retain earlier choices. A stale preview
 must be refreshed; applying it never silently claims a different set of hours.

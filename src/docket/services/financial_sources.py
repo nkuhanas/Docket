@@ -6,8 +6,8 @@ from fractions import Fraction
 from itertools import pairwise
 from typing import Any
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import case, func, select
+from sqlalchemy.orm import Session, aliased
 
 from docket.agent_auth import require_principal
 from docket.domain.compensation import money, rounded_integer
@@ -129,24 +129,38 @@ class FinancialSourceService:
                 func.row_number()
                 .over(partition_by=r.document_ref, order_by=r.revision.desc())
                 .label("n"),
+                func.max(case((r.status == "issued", r.revision)))
+                .over(partition_by=r.document_ref)
+                .label("last_issue"),
             )
             .join(d, d.ref_id == r.document_ref)
             .where(d.operator_ref == owner, r.created_at <= as_of)
             .subquery()
         )
+        posted = aliased(FinancialDocumentRevision)
         documents = self.session.execute(
-            select(d, r)
+            select(d, r, posted)
             .join(r, r.document_ref == d.ref_id)
             .join(latest, (latest.c.ref_id == r.ref_id) & (latest.c.n == 1))
+            .outerjoin(
+                posted, (posted.document_ref == d.ref_id) & (posted.revision == latest.c.last_issue)
+            )
         ).all()
-        for head, revision in documents:
+        for head, working, last_issue in documents:
+            # Settlement uses the posted facts and observes the current editable head version.
+            revision = last_issue if last_issue is not None else working
             summary = revision.snapshot_json.get("summary", {})
             target = {
                 "ref": head.ref_id,
                 "kind": head.kind,
-                "status": revision.status,
+                "status": working.status,
                 "revision_ref": revision.ref_id,
-                "version": revision.revision,
+                "version": working.revision,
+                **(
+                    {"working_revision_ref": working.ref_id}
+                    if revision.ref_id != working.ref_id
+                    else {}
+                ),
                 "engagement_ref": head.engagement_ref,
                 "date_from": revision.date_from.isoformat(),
                 "date_to": revision.date_to.isoformat(),

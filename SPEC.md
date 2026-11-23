@@ -1,8 +1,8 @@
 # Docket specification
 
-Version: 1.4
-Adopted: November 22, 2026
-Implementation baseline: `7650a40e4136`
+Version: 1.5
+Adopted: November 23, 2026
+Implementation baseline: `452613e`
 
 ## 1. Status and change control
 
@@ -242,6 +242,13 @@ client, terms and due date. Retrying never issues another document/number. Unkno
 rates/currency block the affected invoice finalization, not logging or report
 drafting. Submitted timesheets and issued invoices are immutable snapshots;
 corrections flag reconciliation and use retained amendments/replacements/credits.
+A write requesting a final JSON, Markdown or CSV invoice export issues the exact
+financial revision once. Reads and draft previews retain their existing authority.
+An issued invoice may reopen as an editable draft under the same number. The
+previous issued basis remains collectible and its source quantities protected
+until corrected reissuance atomically replaces it. Payment receipts survive
+corrections and excess applied cash becomes unapplied. Setting the current
+desired state again is idempotent. Each historical export remains reproducible.
 Draft-reserved, reported, issued and available quantities remain queryable.
 
 Expenses are separate records with date, exact amount/currency, vendor/category,
@@ -566,6 +573,7 @@ disabled required operations do not complete two-way synchronization.
 | 012 | Typed ownership of automatically derived Item titles | Preserve long imported titles and useful synchronized names without overwriting independently edited/shared Items. |
 | 013 | Retire NocoDB and fifteen hidden native aliases completely | Preserve data/provenance while removing running legacy/compatibility debt rather than adding fallback paths. |
 | 014 | Use Google-style current-subtree behavior for task-parent completion/deletion and native hierarchy moves | Operator-selected scope matches real API cascades without adding recursive inputs or recurring prompts. Adding a child does not change the parent's ETag; retain actual outcomes and protect unrelated records. |
+| 017 | Issue on final export and retain numbered invoice revisions | Reopening preserves the last collectible basis and cash history while the draft is edited. |
 | 016 | Reconcile distinct observations against one economic cost and one shared review queue | Source, funding, and tax decisions can proceed independently while annual reports retain their evidence. |
 | 015 | Separate agent-managed funding metadata, operator-managed credentials and unified source intake | Original evidence can be retained before extraction, funding attribution or tax review. |
 
@@ -573,6 +581,7 @@ disabled required operations do not complete two-way synchronization.
 
 | Version | Change |
 | --- | --- |
+| 1.5 | Adopts [idempotent invoice issuance and correction](deltas/2026-11-22T21-38-05Z-invoice-materialization-boundary.md). |
 | 1.4 | Adopts F3–F5 reconciliation, reviewed tax workpapers and annual reporting. |
 | 1.3 | Adopts F1/F2 financial intake and funding identities on the deployed 1.2 baseline. Live acceptance is tracked separately. |
 | 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from 4236a81e55fd with actual method admission and plugin 2.2.1. Fresh ChatGPT Tasks context and native write journeys pass; device popup acceptance passes. The v69 JSON/CSV exports pass release and actual host acceptance; the complete delta is accepted. Valid point observations retain exact zero duration without changing canonical event-input rules. |

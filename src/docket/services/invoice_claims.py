@@ -128,7 +128,7 @@ class InvoiceClaimPlanner:
             self.session.scalars(
                 select(DocumentAllocation).where(
                     DocumentAllocation.document_ref == document_ref,
-                    DocumentAllocation.status == "reserved",
+                    DocumentAllocation.status != "released",
                     DocumentAllocation.operator_ref == principal.operator_ref,
                 )
             )
@@ -189,11 +189,7 @@ class InvoiceClaimPlanner:
         )
         result = InvoicePlan(claims=claim_plan)
         existing = [row for row in existing if row not in claim_plan.replaced]
-        allocated = [
-            row
-            for row in allocated
-            if not (row.document_ref == document.ref_id and row.status == "reserved")
-        ]
+        allocated = [row for row in allocated if row.document_ref != document.ref_id]
         terms = {row["term_ref"]: row["terms"] for row in evaluation.result_json["basis"]}
         remaining = None
         if spec.parameters.max_work_minutes is not None:

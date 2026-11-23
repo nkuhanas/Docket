@@ -297,6 +297,40 @@ class DocumentAllocationService:
             self.event(row, revision)
         self.session.flush()
 
+    def retire_superseded(self, revision: FinancialDocumentRevision) -> set[str]:
+        # Last issue remains active throughout draft edits. Swap only at finalization.
+        rows = self.session.scalars(
+            select(DocumentAllocation)
+            .where(
+                DocumentAllocation.document_ref == revision.document_ref,
+                DocumentAllocation.status == "issued",
+                DocumentAllocation.ref_id.not_in(revision.snapshot_json["allocation_refs"]),
+            )
+            .order_by(DocumentAllocation.source_key, DocumentAllocation.ref_id)
+            .with_for_update()
+        ).all()
+        for row in rows:
+            row.status, row.version = "released", row.version + 1
+        self.session.flush()
+        for row in rows:
+            self.event(row, revision)
+        self.session.flush()
+        return {row.source_key for row in rows}
+
+    def number_at(self, revision: FinancialDocumentRevision) -> str | None:
+        return self.session.scalar(
+            select(InvoiceNumber.number)
+            .join(
+                FinancialDocumentRevision,
+                FinancialDocumentRevision.ref_id == InvoiceNumber.issued_revision_ref,
+            )
+            .where(
+                InvoiceNumber.document_ref == revision.document_ref,
+                InvoiceNumber.operator_ref == require_principal("read").operator_ref,
+                FinancialDocumentRevision.revision <= revision.revision,
+            )
+        )
+
     def number(self, revision: FinancialDocumentRevision, series: str) -> InvoiceNumber:
         require_principal("commit")
         document = self.document(revision.document_ref)
