@@ -14,6 +14,7 @@ from docket.schemas.work import EngagementRef, EntityRef
 PaymentRef = Annotated[str, Field(pattern=r"^pay_[0-9A-HJKMNP-TV-Z]{26}$")]
 ClaimTarget = Annotated[str, Field(pattern=r"^(fdoc|exp)_[0-9A-HJKMNP-TV-Z]{26}$")]
 FinancialRef = Annotated[str, Field(pattern=r"^(pay|ftxn|fent|fdoc|exp)_[0-9A-HJKMNP-TV-Z]{26}$")]
+FundingLinkRef = Annotated[str, Field(pattern=r"^(card|actv)_[0-9A-HJKMNP-TV-Z]{26}$")]
 PositiveMoney = Annotated[Money, Field(gt=0)]
 
 
@@ -103,7 +104,8 @@ class ReverseFinancialRecord(FinancialReversalFields, CommandBase):
 
 
 class GetFinancialContext(StrictModel):
-    refs: list[FinancialRef] = Field(default_factory=list, max_length=25)
+    intake_ref: str | None = Field(default=None, pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")
+    refs: list[FinancialRef | FundingLinkRef] = Field(default_factory=list, max_length=25)
     engagement_ref: EngagementRef | None = None
     as_of: datetime | None = None
     format: Literal["summary", "json", "csv"] = "summary"

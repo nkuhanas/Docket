@@ -1,8 +1,8 @@
 # Docket specification
 
-Version: 1.2
-Adopted: November 6, 2026
-Implementation baseline: `8488f165efc100436813f1bebda7d014dcd5846c`
+Version: 1.3
+Adopted: November 22, 2026
+Implementation baseline: `599c7d7c43d2`
 
 ## 1. Status and change control
 
@@ -266,6 +266,14 @@ approval or delivery is useful without an integration and is not fabricated
 provider success. External submission/sending requires a concrete supported,
 authorized target/action. No bank transfers, payroll execution or tax filing is
 included in this amendment.
+
+### Funding and financial evidence
+
+The [financial ingestion delta](deltas/2026-11-22T22-08-43Z-financial-ingestion-and-tax-records.md) is adopted for F1/F2. Agent-managed funding accounts and payment instruments carry non-secret, revisioned metadata. Roles distinguish account liability, cardholder and economic ownership. Updates, retirements and replacement preserve prior activity references. Only authorized writes establish identities. Masked suffixes and extracted hints can be ambiguous. Account-scoped manual and CSV observations preserve source rows, exact amounts, coverage, transfer classification and unresolved matches. Replay and concurrent imports preserve distinct purchases.
+
+One native file submission and the separately authenticated collector share protected acquisition, digest verification, provenance and durable receipt semantics. Record source acceptance, extraction state, expense disposition and review independently. Optional inference produces evidence-anchored suggestions. A trusted writer may recognize a supported expense before funding is known. A collector may submit evidence under its revocable source registration. Qualifying expenses on the verified dedicated Purelymail billing route receive the operator's 100% declaration and write-off intent with exact policy revision. Manual declarations retain the supplied percentage including zero, or stay unknown. Payment, settlement and reviewed deductibility require independent evidence.
+
+Mail secrets are operator-enrolled locally and replaceable independently of source identity. The independent IMAP collector uses verified TLS, read-only selection and non-mutating UID fetches, checkpoints durable acceptance and retains recoverable failures. Activate only after verified enrollment, routing and retention. Prove native identity lifecycle, protected CSV import, real plugin file transfer and live synthetic-mail acceptance separately. F3–F5 remain architectural proposals.
 
 ## 5. Native context and commands
 
@@ -550,11 +558,13 @@ disabled required operations do not complete two-way synchronization.
 | 012 | Typed ownership of automatically derived Item titles | Preserve long imported titles and useful synchronized names without overwriting independently edited/shared Items. |
 | 013 | Retire NocoDB and fifteen hidden native aliases completely | Preserve data/provenance while removing running legacy/compatibility debt rather than adding fallback paths. |
 | 014 | Use Google-style current-subtree behavior for task-parent completion/deletion and native hierarchy moves | Operator-selected scope matches real API cascades without adding recursive inputs or recurring prompts. Adding a child does not change the parent's ETag; retain actual outcomes and protect unrelated records. |
+| 015 | Separate agent-managed funding metadata, operator-managed credentials and unified source intake | Original evidence can be retained before extraction, funding attribution or tax review. |
 
 ## 10. Version history
 
 | Version | Change |
 | --- | --- |
+| 1.3 | Adopts F1/F2 financial intake and funding identities on the deployed 1.2 baseline. Live acceptance is tracked separately. |
 | 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from 4236a81e55fd with actual method admission and plugin 2.2.1. Fresh ChatGPT Tasks context and native write journeys pass; device popup acceptance passes. The v69 JSON/CSV exports pass release and actual host acceptance; the complete delta is accepted. Valid point observations retain exact zero duration without changing canonical event-input rules. |
 | 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

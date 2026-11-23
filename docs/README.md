@@ -21,6 +21,8 @@ records earlier design measurements; those measurements do not prove implementat
 The [existing-catalogue consolidation review](catalogue-simplification-review.md)
 extends that proposal with equivalent tool routes and unchanged surviving inputs.
 
+[Financial intake operations](financial-intake-operations.md) covers funding identities, original-file submission and Purelymail enrollment.
+
 Start here when operating or changing the deployed stack:
 
 * [Operations runbook](operations-runbook.md) — current clean-runtime diagnosis,

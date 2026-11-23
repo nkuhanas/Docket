@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Local secret enrollment and operations for the isolated financial collector."""
+
+import argparse
+import getpass
+import os
+import secrets
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[1]
+os.chdir(root)
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "action", choices=["enroll-mail", "test", "authorize", "start", "status", "revoke"]
+)
+parser.add_argument("--owner-only-retain-until-removed", action="store_true")
+args = parser.parse_args()
+directory = root / "secrets" / "financial-collector"
+state = root / ".runtime" / "financial-collector"
+for path in (directory, state):
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink() or path.stat().st_uid != os.getuid():
+        raise SystemExit("The private collector directory must belong to the local operator.")
+    path.chmod(0o700)
+env = {
+    **os.environ,
+    "FINANCIAL_COLLECTOR_UID": str(os.getuid()),
+    "FINANCIAL_COLLECTOR_GID": str(os.getgid()),
+}
+compose = ["docker", "compose", "--profile", "financial-collector"]
+
+
+def write_private(name, value):
+    with tempfile.NamedTemporaryFile(dir=directory, delete=False) as temp:
+        temp.write(value.encode())
+        temp.flush()
+        os.fsync(temp.fileno())
+    os.replace(temp.name, directory / name)
+
+
+def configure_compose():
+    global compose
+    if subprocess.run(
+        ["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ).returncode:
+        compose = [
+            "sudo",
+            "-n",
+            "--preserve-env=FINANCIAL_COLLECTOR_UID,FINANCIAL_COLLECTOR_GID,DOCKET_IMAGE",
+            *compose,
+        ]
+    # Use the exact image running the Docket service, including after a rollback.
+    active = subprocess.check_output(compose + ["ps", "-q", "docket"], env=env, text=True).strip()
+    if not active:
+        raise SystemExit("The Docket deployment is unavailable.")
+    docker = compose[: compose.index("compose")]
+    env["DOCKET_IMAGE"] = subprocess.check_output(
+        docker + ["inspect", "--format", "{{.Image}}", active], text=True, env=env
+    ).strip()
+
+
+def container(action):
+    return subprocess.run(
+        compose
+        + [
+            "run",
+            "--rm",
+            "--no-deps",
+            "financial-collector",
+            "./.venv/bin/python",
+            "-m",
+            "docket.financial_collector",
+            action,
+        ],
+        env=env,
+        check=True,
+    )
+
+
+if args.action != "enroll-mail":
+    configure_compose()
+
+if args.action == "enroll-mail":
+    if not sys.stdin.isatty():
+        raise SystemExit("Enroll from a private interactive terminal.")
+    password = getpass.getpass("Purelymail IMAP application password (hidden): ")
+    if not password or any(c in password for c in "\r\n"):
+        raise SystemExit("An application password is required.")
+    write_private("imap_password", password)
+    print("IMAP credential enrolled.")
+elif args.action == "authorize":
+    if not args.owner_only_retain_until_removed:
+        raise SystemExit(
+            "Confirm owner-only original retention with --owner-only-retain-until-removed."
+        )
+    container("test")
+    keyfile = directory / "collector_token"
+    if not keyfile.exists():
+        write_private("collector_token", secrets.token_urlsafe(32))
+    with keyfile.open("rb") as key:
+        subprocess.run(
+            compose
+            + [
+                "exec",
+                "-T",
+                "docket",
+                "./.venv/bin/python",
+                "-m",
+                "docket.financial_collector_admin",
+                "authorize",
+                "--owner-only-retain-until-removed",
+            ],
+            env=env,
+            stdin=key,
+            check=True,
+        )
+elif args.action == "revoke":
+    subprocess.run(
+        compose
+        + [
+            "exec",
+            "-T",
+            "docket",
+            "./.venv/bin/python",
+            "-m",
+            "docket.financial_collector_admin",
+            "revoke",
+        ],
+        env=env,
+        check=True,
+    )
+elif args.action == "start":
+    subprocess.run(compose + ["up", "-d", "--no-deps", "financial-collector"], env=env, check=True)
+else:
+    container(args.action)

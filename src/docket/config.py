@@ -31,6 +31,14 @@ class Settings(BaseSettings):
         default="sqlite+pysqlite:///./.runtime/docket.db",
         alias="DOCKET_DATABASE_URL",
     )
+    financial_ollama_url: str = Field(
+        default="http://ollama:11434", alias="DOCKET_FINANCIAL_OLLAMA_URL"
+    )
+    financial_classifier_model: str = Field(default="", alias="DOCKET_FINANCIAL_CLASSIFIER_MODEL")
+    financial_extraction_model: str = Field(default="", alias="DOCKET_FINANCIAL_EXTRACTION_MODEL")
+    financial_file_hosts: str = Field(
+        default="*.oaiusercontent.com", alias="DOCKET_FINANCIAL_FILE_HOSTS"
+    )
     timezone: str = Field(default="America/Los_Angeles", alias="DOCKET_TIMEZONE")
     tasks_enabled: bool = Field(default=False, alias="DOCKET_TASKS_ENABLED")
     tasks_poll_seconds: float = Field(default=15.0, ge=1, alias="DOCKET_TASKS_POLL_SECONDS")

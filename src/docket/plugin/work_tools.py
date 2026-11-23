@@ -14,6 +14,7 @@ from docket.schemas.compensation import POLICY_TOOL_PURPOSES, GetCompensation
 from docket.schemas.expenses import EXPENSE_TOOL_PURPOSES, QueryExpenses
 from docket.schemas.financial_documents import FINANCIAL_TOOL_PURPOSES, ReadDocument
 from docket.schemas.followup import FOLLOWUP_TOOL_PURPOSES
+from docket.schemas.funding import FundingContext
 from docket.schemas.invoices import INVOICE_TOOL_PURPOSES
 from docket.schemas.settlement import SETTLEMENT_TOOL_PURPOSES, GetFinancialContext
 from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSessions
@@ -33,6 +34,7 @@ from docket.services.financial_documents import (
     DOCUMENT_COMMAND_MODELS,
     FinancialDocumentCommandService,
 )
+from docket.services.funding import FundingService
 from docket.services.invoices import INVOICE_COMMAND_MODELS, InvoiceCommandService
 from docket.services.native_context import NativeContextService
 from docket.services.settlement_commands import SETTLEMENT_COMMAND_MODELS, SettlementCommandService
@@ -166,6 +168,28 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
     ):
         register(name)
 
+    def funding(arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments.pop("request_ref", None)
+        arguments.pop("request_key", None)
+        try:
+            with session_scope() as session:
+                return FundingService(session).context(
+                    FundingContext.model_validate(arguments), settings
+                )
+        except DocketError as exc:
+            return exc.as_dict()
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+
+    server.add_tool(
+        model_function(FundingContext, "docket_get_funding_context", funding),
+        name="docket_get_funding_context",
+        description="Read owned funding identities and observations.",
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+        ),
+    )
+
     def context(arguments: dict[str, Any]) -> dict[str, Any]:
         arguments.pop("request_ref", None)
         arguments.pop("request_key", None)
@@ -298,7 +322,39 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         try:
             public = GetFinancialContext.model_validate(arguments)
             with session_scope() as session:
-                return FinancialContextService(session, settings).query(public)
+                if public.intake_ref:
+                    from docket.plugin.financial_intake import intake_context
+
+                    return intake_context(
+                        session, settings, public.intake_ref, public.refs,
+                        public.cursor, public.limit
+                    )
+                result = FinancialContextService(session, settings).query(public)
+                if public.format == "summary" and not public.cursor:
+                    from sqlalchemy import select
+
+                    from docket.agent_auth import require_principal
+                    from docket.models.financial_intake import FinancialIntake
+                    from docket.services.financial_intake import FinancialIntakeService
+
+                    service = FinancialIntakeService(session, settings)
+                    owner = require_principal("read").operator_ref
+                    result["linked_intake"] = {
+                        ref: service.related_evidence(ref, owner)
+                        for ref in public.refs if ref.startswith("exp_")
+                    }
+                    result["recent_intake_refs"] = list(
+                        session.scalars(
+                            select(FinancialIntake.source_ref)
+                            .where(
+                                FinancialIntake.operator_ref
+                                == require_principal("read").operator_ref
+                            )
+                            .order_by(FinancialIntake.created_at.desc())
+                            .limit(8)
+                        )
+                    )
+                return result
         except ValidationError as exc:
             return public_validation_error(exc).as_dict()
         except DocketError as exc:

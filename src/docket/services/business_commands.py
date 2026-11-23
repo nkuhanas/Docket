@@ -224,6 +224,13 @@ class BusinessCommandService(NativeCommandService):
             )
             if definition.object_type == "task" and definition.action == "retract":
                 plan["command_preview"] = {"task_scope": "current_subtree"}
+            if definition.object_type == "statement_import":
+                from docket.schemas.funding import StatementFields
+                from docket.services.funding import FundingService
+
+                plan["command_preview"] = FundingService(self.session).statement_preview(
+                    StatementFields.model_validate(fields)
+                )
             return plan
 
         return self.execute(
