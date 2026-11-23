@@ -76,6 +76,7 @@ _PROVENANCE_PREFIXES = frozenset(
     {
         "tlist", "tpol", "tobs", "tbnd", "tbrv", "tscf", "teff", "trgen",
         "fdoc", "fdrev", "clm", "ceval", "alloc", "fobs", "exp", "exrev", "exobs",
+        "frep", "finrev",
         "eng", "erev", "work", "wrev",
         "req",
         "rec",

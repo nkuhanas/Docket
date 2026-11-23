@@ -33,6 +33,7 @@ _DEFINITIONS = (
     PublicRefDefinition("alloc", "DocumentAllocation"),
     PublicRefDefinition("fcol", "FinancialCollector"),
     PublicRefDefinition("fcand", "FinancialCandidate"),
+    PublicRefDefinition("finrev", "FinancialReviewFact"),
     PublicRefDefinition("fund", "FundingAccount"),
     PublicRefDefinition("card", "PaymentInstrument"),
     PublicRefDefinition("actv", "AccountActivity"),

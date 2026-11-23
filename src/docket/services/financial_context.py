@@ -367,7 +367,7 @@ class FinancialContextService:
                     FinancialReportSnapshot.principal_ref == principal.principal_ref,
                 )
             )
-            if snapshot is None:
+            if snapshot is None or snapshot.parameters_json.get("report_kind") == "financial_year":
                 raise DocketError(
                     code="financial_report_unavailable",
                     message="Read a report with this connection.",

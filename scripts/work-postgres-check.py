@@ -2129,6 +2129,9 @@ async def check():
     from financial_intake_postgres_check import check_financial_intake
 
     intake_evidence = await check_financial_intake(settings, factory, principal)
+    from financial_review_postgres_check import check_financial_review
+
+    review_evidence = await check_financial_review(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -2310,7 +2313,7 @@ async def check():
     try:
         command.downgrade(config, "20261104e3f4")
     except RuntimeError as exc:
-        assert str(exc) == "Retained financial evidence or collector authority prevents downgrade"
+        assert str(exc) == "Retained financial workpapers prevent downgrade"
     else:
         raise AssertionError("Downgrade discarded populated work history")
     from alembic.runtime.migration import MigrationContext
@@ -2318,7 +2321,7 @@ async def check():
     from docket.models import TaskReminderAuthority
 
     with engine.connect() as connection:
-        assert MigrationContext.configure(connection).get_current_revision() == "20261122b2c3"
+        assert MigrationContext.configure(connection).get_current_revision() == "20261123a1b2"
     with factory() as session:
         assert session.scalar(select(TaskReminderAuthority.generation_ref).limit(1))
         assert session.scalar(select(WorkSession.id).limit(1))
@@ -2332,6 +2335,7 @@ async def check():
                 **work_calendar_evidence,
                 **tasks_evidence,
                 **intake_evidence,
+                **review_evidence,
                 "work_schema_roundtrip": "passed",
                 "canonical_work_retry": "passed",
                 "canonical_correction_race": "passed",

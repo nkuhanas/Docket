@@ -148,16 +148,39 @@ class FinancialIntakeService:
         )
         if row is None:
             return None
+        if row.declarations.get("evidence_role") == "statement":
+            row.status, row.reason = "complete", "original_retained_for_review"
+            return row
         # Storage faults roll back for retry. Extraction failures preserve the source.
         raw = attachment_store(self.session, self.settings).plaintext(row.source_ref)
         try:
-            extracted = extract(raw, row.media_type)
+            extracted = extract(
+                raw,
+                row.media_type,
+                income=row.declarations.get("evidence_role") == "income_document",
+            )
         except Exception:
             row.status, row.reason = "failed", "unreadable_original"
             extracted = []
         else:
             row.status = "complete" if extracted else "partial"
             row.reason = None if extracted else "financial_facts_unresolved"
+        if row.declarations.get("evidence_role") == "income_document":
+            for index, facts in enumerate(extracted):
+                self.session.add(
+                    FinancialCandidate(
+                        source_ref=row.source_ref,
+                        ordinal=index,
+                        facts=facts,
+                        disposition="evidence_only",
+                        review_reason="confirm_income_basis",
+                    )
+                )
+            if row.status != "failed":
+                row.status = "complete" if extracted else "partial"
+                row.reason = "confirm_income_basis" if extracted else "income_layout_unresolved"
+            self.session.flush()
+            return row
         for index, facts in enumerate(extracted or [{"anchor": "file"}]):
             key = purchase_key(facts)
             enough = not facts.get("review_only") and all(
@@ -187,6 +210,7 @@ class FinancialIntakeService:
             select(FinancialIntake)
             .where(
                 FinancialIntake.status == "partial",
+                FinancialIntake.declarations["evidence_role"].as_string().is_(None),
                 FinancialIntake.inference_attempts < 3,
                 (
                     FinancialIntake.next_attempt.is_(None)
@@ -321,6 +345,10 @@ class FinancialIntakeService:
         }
 
     def resolve(self, session: Session, changeset: Any, change: Any) -> list[str]:
+        from docket.services.financial_review import current_facts, legacy_matches, lock_review
+
+        owner = require_principal("commit").operator_ref
+        lock_review(session, owner)
         candidate = session.scalar(
             select(FinancialCandidate)
             .where(FinancialCandidate.ref_id == change.object_ref)
@@ -330,6 +358,8 @@ class FinancialIntakeService:
         if candidate is None:
             raise rejected("candidate_unavailable")
         src = self.owned(candidate.source_ref)
+        if src.declarations.get("evidence_role") == "income_document":
+            raise rejected("use_income_evidence_command")
         if changeset.expected_versions.get(candidate.ref_id) != candidate.version:
             raise rejected("candidate_version_conflict")
         choice = ResolveEvidence.model_validate(change.payload)
@@ -416,6 +446,16 @@ class FinancialIntakeService:
             )
             if activity is None:
                 raise rejected("activity_unavailable")
+            if any(
+                r.kind in ("activity_match", "tax_allocation")
+                and (
+                    activity.ref_id
+                    in (r.fields.get("activity_ref"), r.fields.get("counterpart_ref"))
+                    or (r.fields.get("expense_ref") == ref and r.fields.get("role") == "purchase")
+                )
+                for r in current_facts(session, owner)
+            ) or legacy_matches(session, owner).get(ref, set()) - {activity.ref_id}:
+                raise rejected("activity_link_conflict")
             posting = activity.fields
             cost = expenses.revision(expenses.head(ref, lock=True))
             if (

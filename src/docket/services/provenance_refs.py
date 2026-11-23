@@ -79,7 +79,9 @@ from docket.models import (
     WorkSessionRevision,
 )
 from docket.models.financial_intake import FinancialCandidate, FinancialIntake
+from docket.models.financial_review import FinancialReviewFact
 from docket.models.funding import AccountActivity, FundingIdentity, FundingRevision, StatementImport
+from docket.models.settlement import FinancialReportSnapshot
 
 PROVENANCE_PREFIXES = frozenset(
     {
@@ -102,7 +104,13 @@ PROVENANCE_PREFIXES = frozenset(
         "fobs",
         "exp",
         "fcand",
-        "fund", "card", "furev", "actv", "fstmt",
+        "fund",
+        "card",
+        "furev",
+        "actv",
+        "fstmt",
+        "frep",
+        "finrev",
         "exrev",
         "exobs",
         "eng",
@@ -173,8 +181,13 @@ _PHASE_TWO_MODELS: dict[str, type[Any]] = {
     "fobs": FinancialDocumentObservation,
     "alloc": DocumentAllocation,
     "fcand": FinancialCandidate,
-    "fund": FundingIdentity, "card": FundingIdentity, "furev": FundingRevision,
-    "actv": AccountActivity, "fstmt": StatementImport,
+    "fund": FundingIdentity,
+    "card": FundingIdentity,
+    "furev": FundingRevision,
+    "frep": FinancialReportSnapshot,
+    "finrev": FinancialReviewFact,
+    "actv": AccountActivity,
+    "fstmt": StatementImport,
     "exp": Expense,
     "exrev": ExpenseRevision,
     "exobs": ExpenseObservation,
@@ -269,13 +282,33 @@ class ProvenanceRefService:
                 message="A referenced provenance object does not exist.",
                 details={"ref": ref_id},
             )
+        if isinstance(item, FinancialReportSnapshot):
+            from docket.agent_auth import require_principal
+
+            caller = require_principal("read")
+            if (item.operator_ref, item.principal_ref) != (
+                caller.operator_ref,
+                caller.principal_ref,
+            ):
+                raise DocketError(
+                    code="financial_report_unavailable", message="Read an owned report."
+                )
         if isinstance(item, FinancialCandidate):
             from docket.services.work_attribution import read_operator
 
             source = self.session.get(FinancialIntake, item.source_ref)
             if source is None or source.operator_ref != read_operator():
                 raise DocketError(code="candidate_unavailable", message="Use owned evidence.")
-        if isinstance(item, (FundingIdentity, FundingRevision, AccountActivity, StatementImport)):
+        if isinstance(
+            item,
+            (
+                FinancialReviewFact,
+                FundingIdentity,
+                FundingRevision,
+                AccountActivity,
+                StatementImport,
+            ),
+        ):
             from docket.services.funding import FundingService
 
             FundingService(self.session).require_owned(item)

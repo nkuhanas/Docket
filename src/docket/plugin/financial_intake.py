@@ -80,7 +80,12 @@ def register_financial_intake(server: ProvenanceMCP, settings: Settings) -> None
             declarations = public.model_dump(
                 mode="json",
                 exclude_none=True,
-                include={"business_use_percent", "write_off_intent", "reported_instrument"},
+                include={
+                    "evidence_role",
+                    "business_use_percent",
+                    "write_off_intent",
+                    "reported_instrument",
+                },
             )
             identity = sha256_json([public.file.file_id, declarations])
             with session_scope() as session:

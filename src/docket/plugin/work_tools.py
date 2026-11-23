@@ -13,6 +13,7 @@ from docket.plugin.business import model_function
 from docket.schemas.compensation import POLICY_TOOL_PURPOSES, GetCompensation
 from docket.schemas.expenses import EXPENSE_TOOL_PURPOSES, QueryExpenses
 from docket.schemas.financial_documents import FINANCIAL_TOOL_PURPOSES, ReadDocument
+from docket.schemas.financial_review import ReadFinancialYear
 from docket.schemas.followup import FOLLOWUP_TOOL_PURPOSES
 from docket.schemas.funding import FundingContext
 from docket.schemas.invoices import INVOICE_TOOL_PURPOSES
@@ -34,6 +35,7 @@ from docket.services.financial_documents import (
     DOCUMENT_COMMAND_MODELS,
     FinancialDocumentCommandService,
 )
+from docket.services.financial_year import FinancialYearService
 from docket.services.funding import FundingService
 from docket.services.invoices import INVOICE_COMMAND_MODELS, InvoiceCommandService
 from docket.services.native_context import NativeContextService
@@ -167,6 +169,29 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         *WORK_CALENDAR_MODELS,
     ):
         register(name)
+
+    def financial_year(arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments.pop("request_ref", None)
+        arguments.pop("request_key", None)
+        try:
+            with session_scope() as session:
+                return FinancialYearService(session).read(
+                    ReadFinancialYear.model_validate(arguments)
+                )
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+        except DocketError as exc:
+            return exc.as_dict()
+
+    server.add_tool(
+        model_function(ReadFinancialYear, "docket_get_financial_year", financial_year),
+        name="docket_get_financial_year",
+        description=("Read a pinned financial year and its decisions. Use refs to observe inputs "
+                     "for financial commands. Reuse report_ref for paged JSON or CSV."),
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+        ),
+    )
 
     def funding(arguments: dict[str, Any]) -> dict[str, Any]:
         arguments.pop("request_ref", None)
@@ -326,8 +351,12 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                     from docket.plugin.financial_intake import intake_context
 
                     return intake_context(
-                        session, settings, public.intake_ref, public.refs,
-                        public.cursor, public.limit
+                        session,
+                        settings,
+                        public.intake_ref,
+                        public.refs,
+                        public.cursor,
+                        public.limit,
                     )
                 result = FinancialContextService(session, settings).query(public)
                 if public.format == "summary" and not public.cursor:
@@ -341,7 +370,8 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                     owner = require_principal("read").operator_ref
                     result["linked_intake"] = {
                         ref: service.related_evidence(ref, owner)
-                        for ref in public.refs if ref.startswith("exp_")
+                        for ref in public.refs
+                        if ref.startswith("exp_")
                     }
                     result["recent_intake_refs"] = list(
                         session.scalars(

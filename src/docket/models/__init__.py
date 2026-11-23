@@ -77,6 +77,7 @@ from docket.models.financial_documents import (
 )
 from docket.models.financial_intake import FinancialCandidate, FinancialCollector, FinancialIntake
 from docket.models.financial_observations import FinancialDocumentObservation
+from docket.models.financial_review import FinancialReviewFact
 from docket.models.funding import AccountActivity, FundingIdentity, FundingRevision, StatementImport
 from docket.models.gmail import ConnectorCheckpoint, GmailSource
 from docket.models.google_tasks import (
@@ -247,6 +248,7 @@ __all__ = [
     "FinancialEntry",
     "FinancialIntake",
     "FinancialReportSnapshot",
+    "FinancialReviewFact",
     "FinancialTransaction",
     "FundingIdentity",
     "FundingRevision",
