@@ -21,6 +21,7 @@ from docket.database import (
 )
 from docket.domain.errors import DocketError
 from docket.internal_api.agent_router import router as agent_router
+from docket.internal_api.financial_collector import router as collector_router
 from docket.internal_api.provenance_router import router as provenance_router
 from docket.internal_api.router import router as internal_router
 from docket.mcp import mcp, triage_mcp
@@ -104,6 +105,16 @@ deferred_ingress_runner = (
     if settings.discord_adapter_enabled and settings.discord_projection_enabled
     else None
 )
+def process_financial_source() -> None:
+    from docket.services.financial_intake import FinancialIntakeService
+
+    with session_scope() as session:
+        processed = FinancialIntakeService(session, settings).process()
+    if processed is None:
+        with session_scope() as session:
+            FinancialIntakeService(session, settings).suggest_pending()
+
+
 worker = WorkerRuntime(
     settings.worker_heartbeat_seconds,
     OperationRunner(
@@ -153,6 +164,7 @@ worker = WorkerRuntime(
     ),
     execution_lease_coordinator=ExecutionLeaseCoordinator(get_session_factory()),
     deferred_ingress_runner=deferred_ingress_runner,
+    financial_extractor=process_financial_source,
     conversation_retention_service=(
         ConversationRetentionService(get_session_factory(), settings)
         if settings.retention_enabled else None
@@ -193,6 +205,7 @@ if settings.discord_adapter_enabled:
     app.include_router(internal_router)
     app.include_router(agent_router)
     app.include_router(provenance_router)
+app.include_router(collector_router)
 app.mount("/mcp", mcp.streamable_http_app())
 app.mount("/triage-mcp", triage_mcp.streamable_http_app())
 app.mount("/plugin", plugin_app)

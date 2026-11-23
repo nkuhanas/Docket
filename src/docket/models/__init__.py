@@ -75,7 +75,9 @@ from docket.models.financial_documents import (
     WorkClaim,
     WorkClaimEvent,
 )
+from docket.models.financial_intake import FinancialCandidate, FinancialCollector, FinancialIntake
 from docket.models.financial_observations import FinancialDocumentObservation
+from docket.models.funding import AccountActivity, FundingIdentity, FundingRevision, StatementImport
 from docket.models.gmail import ConnectorCheckpoint, GmailSource
 from docket.models.google_tasks import (
     GoogleTaskList,
@@ -179,6 +181,7 @@ from docket.models.work_reports import WorkReportMember, WorkReportSnapshot
 from docket.models.workload import OperationalReminder, WorkloadReconciliation
 
 __all__ = [
+    "AccountActivity",
     "Affiliation",
     "AgentResponse",
     "AssemblyExecution",
@@ -236,12 +239,17 @@ __all__ = [
     "ExpenseReportSnapshot",
     "ExpenseRevision",
     "Fact",
+    "FinancialCandidate",
+    "FinancialCollector",
     "FinancialDocument",
     "FinancialDocumentObservation",
     "FinancialDocumentRevision",
     "FinancialEntry",
+    "FinancialIntake",
     "FinancialReportSnapshot",
     "FinancialTransaction",
+    "FundingIdentity",
+    "FundingRevision",
     "GatewayLifetime",
     "GmailSource",
     "GoogleTaskList",
@@ -294,6 +302,7 @@ __all__ = [
     "SemanticRequestSpecification",
     "SenderIdentityEmail",
     "Source",
+    "StatementImport",
     "StatementRelation",
     "Task",
     "TaskBindingRevision",

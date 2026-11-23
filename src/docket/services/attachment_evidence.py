@@ -160,7 +160,7 @@ class AttachmentEvidenceService:
                 message="Attachment manifest size does not match its received bytes.",
             )
 
-    def _blob(self, source_ref: str, plaintext: bytes) -> EncryptedAttachmentBlob:
+    def encrypted_blob(self, source_ref: str, plaintext: bytes) -> EncryptedAttachmentBlob:
         nonce = os.urandom(12)
         ciphertext = AESGCM(self.encryption_key).encrypt(
             nonce,
@@ -251,7 +251,7 @@ class AttachmentEvidenceService:
             self.session.add_all([source, evidence])
             if ingest_state == "available":
                 assert capture.plaintext is not None
-                self.session.add(self._blob(source_ref, capture.plaintext))
+                self.session.add(self.encrypted_blob(source_ref, capture.plaintext))
             refs.append(source_ref)
         utterance.attachment_source_refs = refs
         return refs
@@ -311,7 +311,7 @@ class AttachmentEvidenceService:
             ))
             if state == "available":
                 assert capture.plaintext is not None
-                self.session.add(self._blob(source_ref, capture.plaintext))
+                self.session.add(self.encrypted_blob(source_ref, capture.plaintext))
             refs.append(source_ref)
         self.session.flush()
         return refs
@@ -367,7 +367,7 @@ class AttachmentEvidenceService:
             evidence.content_hash = content_hash
             if ingest_state == "available":
                 assert capture.plaintext is not None
-                self.session.add(self._blob(evidence.ref_id, capture.plaintext))
+                self.session.add(self.encrypted_blob(evidence.ref_id, capture.plaintext))
         return list(utterance.attachment_source_refs)
 
     def summaries(self, utterance: OperatorUtterance) -> list[dict[str, object]]:
@@ -504,6 +504,15 @@ class AttachmentTextService:
         )
         if evidence is None:
             raise DocketError(code="not_found", message="Attachment source was not found.")
+        from docket.models.financial_intake import FinancialIntake
+
+        financial = self.attachments.session.get(FinancialIntake, source_ref)
+        if financial:
+            from docket.agent_auth import require_principal
+
+            principal = require_principal("read")
+            if principal.role != "interactive" or principal.operator_ref != financial.operator_ref:
+                raise DocketError(code="attachment_unavailable", message="Use owned evidence.")
         media_type = (evidence.media_type or "").casefold()
         filename = (evidence.filename or "").casefold()
         if media_type != "application/pdf" and not filename.endswith(".pdf"):

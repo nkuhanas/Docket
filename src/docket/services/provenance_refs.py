@@ -78,6 +78,8 @@ from docket.models import (
     WorkSession,
     WorkSessionRevision,
 )
+from docket.models.financial_intake import FinancialCandidate, FinancialIntake
+from docket.models.funding import AccountActivity, FundingIdentity, FundingRevision, StatementImport
 
 PROVENANCE_PREFIXES = frozenset(
     {
@@ -99,6 +101,8 @@ PROVENANCE_PREFIXES = frozenset(
         "alloc",
         "fobs",
         "exp",
+        "fcand",
+        "fund", "card", "furev", "actv", "fstmt",
         "exrev",
         "exobs",
         "eng",
@@ -168,6 +172,9 @@ _PHASE_TWO_MODELS: dict[str, type[Any]] = {
     "fent": FinancialEntry,
     "fobs": FinancialDocumentObservation,
     "alloc": DocumentAllocation,
+    "fcand": FinancialCandidate,
+    "fund": FundingIdentity, "card": FundingIdentity, "furev": FundingRevision,
+    "actv": AccountActivity, "fstmt": StatementImport,
     "exp": Expense,
     "exrev": ExpenseRevision,
     "exobs": ExpenseObservation,
@@ -262,6 +269,16 @@ class ProvenanceRefService:
                 message="A referenced provenance object does not exist.",
                 details={"ref": ref_id},
             )
+        if isinstance(item, FinancialCandidate):
+            from docket.services.work_attribution import read_operator
+
+            source = self.session.get(FinancialIntake, item.source_ref)
+            if source is None or source.operator_ref != read_operator():
+                raise DocketError(code="candidate_unavailable", message="Use owned evidence.")
+        if isinstance(item, (FundingIdentity, FundingRevision, AccountActivity, StatementImport)):
+            from docket.services.funding import FundingService
+
+            FundingService(self.session).require_owned(item)
         if isinstance(item, WorkCalendarProjection | WorkCalendarRevision):
             from docket.services.work_calendar import WorkCalendarService
 

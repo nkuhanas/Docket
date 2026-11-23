@@ -23,7 +23,18 @@ from docket.schemas.events import (
 from docket.schemas.evidence import FieldEvidenceInput
 from docket.schemas.expenses import ExpenseRef, ExpenseSpec
 from docket.schemas.financial_documents import DocumentRef, TimesheetSpec, TimesheetStatusSpec
+from docket.schemas.financial_intake import CandidateRef, ResolveEvidence
 from docket.schemas.followup import OperationalReminderSpec, WorkloadReconciliationSpec
+from docket.schemas.funding import (
+    AccountRef,
+    ActivityFields,
+    FundingAccountPatch,
+    FundingAccountSpec,
+    InstrumentPatch,
+    InstrumentRef,
+    InstrumentSpec,
+    StatementFields,
+)
 from docket.schemas.invoices import InvoiceSpec, InvoiceStatusSpec
 from docket.schemas.native_tasks import (
     TaskConflictRef,
@@ -586,6 +597,69 @@ def mutation_input_json(
 
     retain(value, result, patch=preserve_explicit_nulls)
     return result
+
+
+class FinancialCandidateModify(MutationBase):
+    mutation_type: Literal["financial_candidate_modify"] = "financial_candidate_modify"
+    action: Literal["update"]
+    object_type: Literal["financial_candidate"]
+    object_ref: CandidateRef
+    create_spec: None = None
+    payload: ResolveEvidence
+
+
+class FundingAccountCreate(MutationBase):
+    mutation_type: Literal["funding_account_create"] = "funding_account_create"
+    action: Literal["create"]
+    object_type: Literal["funding_account"]
+    object_ref: None = None
+    create_spec: FundingAccountSpec
+    payload: None = None
+
+
+class FundingAccountModify(MutationBase):
+    mutation_type: Literal["funding_account_modify"] = "funding_account_modify"
+    action: Literal["update"]
+    object_type: Literal["funding_account"]
+    object_ref: AccountRef
+    create_spec: None = None
+    payload: FundingAccountPatch
+
+
+class PaymentInstrumentCreate(MutationBase):
+    mutation_type: Literal["payment_instrument_create"] = "payment_instrument_create"
+    action: Literal["create"]
+    object_type: Literal["payment_instrument"]
+    object_ref: None = None
+    create_spec: InstrumentSpec
+    payload: None = None
+
+
+class PaymentInstrumentModify(MutationBase):
+    mutation_type: Literal["payment_instrument_modify"] = "payment_instrument_modify"
+    action: Literal["update"]
+    object_type: Literal["payment_instrument"]
+    object_ref: InstrumentRef
+    create_spec: None = None
+    payload: InstrumentPatch
+
+
+class AccountActivityCreate(MutationBase):
+    mutation_type: Literal["account_activity_create"] = "account_activity_create"
+    action: Literal["create"]
+    object_type: Literal["account_activity"]
+    object_ref: None = None
+    create_spec: ActivityFields
+    payload: None = None
+
+
+class StatementImportCreate(MutationBase):
+    mutation_type: Literal["statement_import_create"] = "statement_import_create"
+    action: Literal["create"]
+    object_type: Literal["statement_import"]
+    object_ref: None = None
+    create_spec: StatementFields
+    payload: None = None
 
 
 class ExpenseCreate(MutationBase):
@@ -1366,6 +1440,13 @@ type TrackedContextMutation = (
     | InvoicePrepare
     | InvoiceRefresh
     | InvoiceTransition
+    | FinancialCandidateModify
+    | FundingAccountCreate
+    | FundingAccountModify
+    | PaymentInstrumentCreate
+    | PaymentInstrumentModify
+    | AccountActivityCreate
+    | StatementImportCreate
     | ExpenseCreate
     | ExpenseModify
     | TimesheetPrepare
@@ -1412,6 +1493,13 @@ type CanonicalMutation = (
     | InvoicePrepare
     | InvoiceRefresh
     | InvoiceTransition
+    | FinancialCandidateModify
+    | FundingAccountCreate
+    | FundingAccountModify
+    | PaymentInstrumentCreate
+    | PaymentInstrumentModify
+    | AccountActivityCreate
+    | StatementImportCreate
     | ExpenseCreate
     | ExpenseModify
     | TimesheetPrepare

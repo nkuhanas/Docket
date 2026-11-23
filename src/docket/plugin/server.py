@@ -31,6 +31,7 @@ from docket.models import AuthenticatedRequest, ChangeSet, PreparedCommand
 from docket.plugin.business import BUSINESS_TOOLS, register_business
 from docket.plugin.commands import NATIVE_COMMAND_TOOLS, register_commands
 from docket.plugin.events import EventMethods, advertise_events
+from docket.plugin.financial_intake import register_financial_intake
 from docket.plugin.instructions import NATIVE_INSTRUCTIONS
 from docket.plugin.schemas import compact_schema
 from docket.plugin.tasks import TASK_COMMAND_TOOLS, register_tasks
@@ -46,7 +47,7 @@ from docket.tool_contracts import contract_tool_names
 class PluginMCP(ProvenanceMCP):
     authority_tools = (
         NATIVE_WORKFLOW_TOOLS | NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS | WORK_COMMAND_TOOLS
-        | TASK_COMMAND_TOOLS
+        | TASK_COMMAND_TOOLS | {"docket_submit_financial_evidence"}
     )
 
     def __init__(self, settings: Settings, poster: WebhookPoster | None = None) -> None:
@@ -67,6 +68,7 @@ class PluginMCP(ProvenanceMCP):
         register_business(self, settings)
         register_work(self, settings)
         register_workflows(self, settings)
+        register_financial_intake(self, settings)
         annotations = ToolAnnotations(
             read_only_hint=True, destructive_hint=False,
             idempotent_hint=True, open_world_hint=False,
@@ -224,6 +226,8 @@ class PluginMCP(ProvenanceMCP):
                 **(tool.meta or {}),
                 "securitySchemes": [{"type": "oauth2", "scopes": scopes}],
             }
+            if tool.name == "docket_submit_financial_evidence":
+                tool.meta["openai/fileParams"] = ["file"]
             if tool.name == "docket_get_profile":
                 tool.meta["openai/profile"] = True
             tool.input_schema = compact_schema(tool.input_schema)

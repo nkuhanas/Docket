@@ -123,7 +123,7 @@ async def test_flat_task_list_configuration_logging_and_completion(session_facto
     ):
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
         assert set(TASK_TOOL_PURPOSES) <= set(tools)
-        assert len(tools) == 114
+        assert len(tools) == 123
         for name in TASK_TOOL_PURPOSES:
             assert len(json.dumps(tools[name].input_schema).encode()) <= 4096, name
             assert len(json.dumps(tools[name].model_dump(mode="json")).encode()) <= 6144, name

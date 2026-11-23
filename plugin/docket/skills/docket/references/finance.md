@@ -87,3 +87,9 @@ Fully reverse a wrong receipt before recording its replacement with replaces_ref
 Missing optional evidence/date remains a gap. Financial JSON/CSV uses the same
 cursor/chunk workflow; export_cursor restarts the captured basis. These commands
 create no bank transfer, payroll submission or provider delivery.
+
+Use docket_get_funding_context to manage non-secret funding accounts and cards.
+For an uploaded receipt or statement, pass the host file to docket_submit_financial_evidence
+with a stable operation_id and only explicit operator declarations. Use docket_get_financial_context
+with its intake_ref for processing status. Link or adopt candidates with docket_update_financial_candidate.
+A posted charge, reviewed deduction and mailbox declaration each require their own basis.

@@ -56,8 +56,10 @@ class WorkerRuntime:
         retention_poll_seconds: float = 3600.0,
         notification_dispatcher: NotificationDispatcher | None = None,
         notification_poll_seconds: float = 5.0,
+        financial_extractor: Callable[[], None] | None = None,
         triage_inbox_service: TriageInboxService | None = None,
     ) -> None:
+        self.financial_extractor = financial_extractor
         self.heartbeat_seconds = heartbeat_seconds
         self.notification_dispatcher = notification_dispatcher
         self.notification_poll_seconds = notification_poll_seconds
@@ -211,12 +213,18 @@ class WorkerRuntime:
         next_reminder = 0.0
         next_projection_repair = 0.0
         next_deferred_ingress = 0.0
+        next_financial = 0.0
         next_retention = 0.0
         next_triage_inbox = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
             now = time.monotonic()
             try:
+                if self.financial_extractor and now >= next_financial:
+                    await self._run_leased(
+                        "cron_execution", "financial-extraction", self.financial_extractor
+                    )
+                    next_financial = now + 10
                 if self.conversation_retention_service is not None and now >= next_retention:
                     await asyncio.to_thread(self.conversation_retention_service.run_once)
                     next_retention = now + self.retention_poll_seconds

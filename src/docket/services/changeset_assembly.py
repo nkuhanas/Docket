@@ -93,6 +93,11 @@ MAX_CANONICAL_ACTIONS = 1_000
 MAX_PROVIDER_OPERATIONS = 500
 
 _GROUP_FOR_OBJECT_TYPE = {
+    "funding_account": "tracked_context_changes",
+    "payment_instrument": "tracked_context_changes",
+    "account_activity": "tracked_context_changes",
+    "statement_import": "tracked_context_changes",
+    "financial_candidate": "tracked_context_changes",
     "expense": "tracked_context_changes",
     "financial_document": "tracked_context_changes",
     "financial_transaction": "tracked_context_changes",

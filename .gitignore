@@ -12,6 +12,7 @@ dist/
 build/
 backups/
 .runtime/
+secrets/financial-collector/
 secrets/local/*
 !secrets/local/README.md
 secrets/restore/*

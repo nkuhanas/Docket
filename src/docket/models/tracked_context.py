@@ -327,7 +327,8 @@ class AttachmentEvidence(Base):
     __tablename__ = "attachment_evidence_metadata"
     __table_args__ = (
         CheckConstraint(
-            "operator_utterance_ref IS NOT NULL OR authenticated_request_ref IS NOT NULL",
+            "operator_utterance_ref IS NOT NULL OR authenticated_request_ref IS NOT NULL "
+            "OR collector_ref IS NOT NULL",
             name="ck_attachment_evidence_authority_root",
         ),
         CheckConstraint(
@@ -372,6 +373,7 @@ class AttachmentEvidence(Base):
     authenticated_request_ref: Mapped[str | None] = mapped_column(
         ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT")
     )
+    collector_ref: Mapped[str | None] = mapped_column(ForeignKey("financial_collectors.ref_id"))
     filename: Mapped[str | None] = mapped_column(String(512))
     media_type: Mapped[str | None] = mapped_column(String(255))
     byte_size: Mapped[int | None] = mapped_column(Integer)
@@ -422,6 +424,7 @@ def _guard_attachment_enrichment(
         "received_at",
         "recorded_at",
         "authenticated_request_ref",
+        "collector_ref",
     )
     if any(state.attrs[field].history.has_changes() for field in immutable_fields):
         raise ValueError("AttachmentEvidence identity and manifest fields are immutable")

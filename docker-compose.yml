@@ -64,6 +64,20 @@ services:
       retries: 12
     networks: [docket-internal]
 
+  financial-collector:
+    image: ${DOCKET_IMAGE:-docket-docket:latest}
+    profiles: [financial-collector]
+    restart: unless-stopped
+    user: "${FINANCIAL_COLLECTOR_UID:-10001}:${FINANCIAL_COLLECTOR_GID:-10001}"
+    command: ["./.venv/bin/python", "-m", "docket.financial_collector", "run"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./secrets/financial-collector:/run/financial-collector:ro
+      - ./.runtime/financial-collector:/var/lib/financial-collector
+    networks: [docket-internal]
+
 volumes:
   postgres-data:
 networks:
