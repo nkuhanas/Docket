@@ -222,6 +222,7 @@ async def test_receipt_through_both_channels_statement_match_and_revocation(
         )
         merged = await call("docket_get_financial_context", {"intake_ref": source})
         assert merged["outcomes"][0]["expense_ref"] == expense
+        assert merged["outcomes"][0]["conflicting_declarations"]
         assert merged["outcomes"][0]["tax_review"] == "unreviewed"
 
         await command(
@@ -364,3 +365,19 @@ def test_download_host_boundary_and_private_capability(monkeypatch, caplog):
         assert rejected.value.code == "file_host_not_approved"
     assert visited == ["files.oaiusercontent.com"]
     assert "synthetic-private" not in caplog.text
+
+
+def test_host_files_without_optional_type_hints():
+    from pathlib import Path
+
+    from docket.services.financial_files import extract, media_type
+
+    pdf = (
+        Path(__file__).resolve().parents[2] / "evidence/financial-intake/synthetic-receipt.pdf"
+    ).read_bytes()
+    assert media_type(pdf, None, None) == "application/pdf"
+    (purchase,) = extract(pdf, "application/pdf")
+    assert purchase["vendor"] == "Example Fixture" and purchase["amount"] == "1.00"
+    assert "document_id" not in purchase
+    assert media_type(b"posted_on,amount,currency\n", None, None) == "text/csv"
+    assert media_type(b"Subject: Test\r\n\r\ntest", None, None) == "message/rfc822"

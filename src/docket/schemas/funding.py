@@ -123,6 +123,7 @@ class StatementFields(StrictModel):
 
 
 class FundingContext(StrictModel):
+    statement_offset: int = Field(default=0, ge=0, le=2000)
     refs: list[str] = Field(default_factory=list, max_length=12)
     after_ref: str | None = None
     account_ref: AccountRef | None = None

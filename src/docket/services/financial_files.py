@@ -10,6 +10,7 @@ from datetime import date
 from decimal import Decimal
 from email import policy
 from email.parser import BytesParser
+from html.parser import HTMLParser
 from pathlib import PurePath
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -86,6 +87,15 @@ def media_type(data: bytes, declared: str | None, name: str | None) -> str:
         actual = "image/png"
     else:
         hint = MEDIA.get(PurePath(name or "").suffix.lower().lstrip(".")) or declared
+        if hint in (None, "application/octet-stream"):
+            first = data[:8192]
+            if re.match(
+                rb"(?i)^(?:from|to|received|date|return-path|subject|mime-version|message-id):",
+                first,
+            ):
+                hint = "message/rfc822"
+            elif b"," in first.split(b"\n", 1)[0]:
+                hint = "text/csv"
         if hint == "message/rfc822":
             message = BytesParser(policy=policy.default).parsebytes(data, headersonly=True)
             if not message.keys() or message.defects:
@@ -164,6 +174,31 @@ def pdf_text(blob: bytes, anchor: str) -> list[dict[str, Any]]:
     ]
 
 
+class BillingText(HTMLParser):
+    """Collect visible billing text without resolving links, styles or remote resources."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"style", "script", "head"}:
+            self.hidden += 1
+        if tag in {"p", "tr", "div", "br"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"style", "script", "head"} and self.hidden:
+            self.hidden -= 1
+        if tag in {"td", "th"}:
+            self.parts.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden:
+            self.parts.append(data)
+
+
 def extract(blob: bytes, media: str) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
     if media == "application/pdf":
@@ -183,6 +218,10 @@ def extract(blob: bytes, media: str) -> list[dict[str, Any]]:
             anchor = f"mime/{i}"
             if part.get_content_type() == "text/plain":
                 facts.append(purchase(data[:64000].decode("utf-8", errors="replace"), anchor))
+            elif part.get_content_type() == "text/html":
+                parser = BillingText()
+                parser.feed(data[:64000].decode("utf-8", errors="replace"))
+                facts.append(purchase("".join(parser.parts), anchor))
             elif part.get_content_type() == "application/pdf" and data.startswith(b"%PDF-"):
                 facts += pdf_text(data, anchor)
     # Keep competing assertions visible while combining identical representations.

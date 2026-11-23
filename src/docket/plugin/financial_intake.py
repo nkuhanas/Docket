@@ -82,18 +82,19 @@ def register_financial_intake(server: ProvenanceMCP, settings: Settings) -> None
                 exclude_none=True,
                 include={"business_use_percent", "write_off_intent", "reported_instrument"},
             )
-            identity = sha256_json([public.context_id, public.file.file_id, declarations])
+            identity = sha256_json([public.file.file_id, declarations])
             with session_scope() as session:
                 AgentRequestService(session).require(
                     request_ref, permission="commit", allow_committed=True
                 )
-                NativeContextService(session, settings).require(public.context_id)
                 existing = FinancialIntakeService(session, settings).find(
                     principal.operator_ref, principal.principal_ref, public.operation_id
                 )
                 if existing and existing.input_hash != identity:
                     raise rejected("financial_delivery_conflict")
                 source = existing.source_ref if existing else None
+                if not source:
+                    NativeContextService(session, settings).require(public.context_id)
             if not source:
                 hosts = frozenset(
                     h.strip().lower() for h in settings.financial_file_hosts.split(",") if h.strip()

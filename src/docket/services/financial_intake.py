@@ -163,6 +163,8 @@ class FinancialIntakeService:
             enough = not facts.get("review_only") and all(
                 facts.get(k) for k in ("vendor", "amount", "currency")
             )
+            if not enough and row.status == "complete":
+                row.status, row.reason = "partial", "financial_facts_unresolved"
             self.session.add(
                 FinancialCandidate(
                     source_ref=row.source_ref,
@@ -288,6 +290,7 @@ class FinancialIntakeService:
                     "facts": c.facts,
                     "disposition": c.disposition,
                     "expense_ref": c.expense_ref,
+                    "expense_revision_ref": c.expense_revision_ref,
                     "declarations": declaration,
                     "funding": c.instrument_revision_ref or "unresolved",
                     "activity_ref": c.activity_ref,
@@ -334,6 +337,13 @@ class FinancialIntakeService:
         facts = candidate.facts
         effect = candidate.disposition
         ref = candidate.expense_ref
+        if candidate.activity_ref and choice.instrument_ref:
+            linked_activity = session.get(AccountActivity, candidate.activity_ref)
+            if linked_activity and linked_activity.fields.get("instrument_ref") not in (
+                None,
+                choice.instrument_ref,
+            ):
+                raise rejected("activity_instrument_conflict")
         if ref and choice.existing_expense_ref and choice.existing_expense_ref != ref:
             raise rejected("expense_link_conflict")
         key = candidate.purchase_key
@@ -439,6 +449,8 @@ class FinancialIntakeService:
             candidate.instrument_revision_ref = funding.revision(
                 funding.head(choice.instrument_ref)
             ).ref_id
+        if candidate.expense_revision_ref is None:
+            candidate.expense_revision_ref = expenses.revision(expenses.head(ref)).ref_id
         candidate.version += 1
         candidate.disposition, candidate.expense_ref = effect, ref
         candidate.review_reason = None

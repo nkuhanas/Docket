@@ -69,6 +69,7 @@ def upgrade() -> None:
         sa.Column("purchase_key", sa.String(length=64), nullable=True),
         sa.Column("disposition", sa.String(length=40), nullable=False),
         sa.Column("expense_ref", sa.String(length=40), nullable=True),
+        sa.Column("expense_revision_ref", sa.String(40), sa.ForeignKey("expense_revisions.ref_id")),
         sa.Column("activity_ref", sa.String(40), sa.ForeignKey("funding_activity.ref_id")),
         sa.Column("instrument_revision_ref", sa.String(length=40), nullable=True),
         sa.Column("changeset_ref", sa.String(length=40), nullable=True),

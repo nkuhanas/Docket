@@ -317,6 +317,8 @@ class FundingService:
             stmt = stmt.where(FundingIdentity.ref_id > query.after_ref)
         if query.refs:
             stmt = stmt.where(FundingIdentity.ref_id.in_(query.refs))
+        elif query.account_ref:
+            stmt = stmt.where(FundingIdentity.ref_id == query.account_ref)
         identities = list(self.session.scalars(stmt.order_by(FundingIdentity.ref_id).limit(13)))
         versions = {r.ref_id: r.version for r in identities[:12]}
         objects = [
@@ -352,7 +354,14 @@ class FundingService:
                 state = (
                     row.fields
                     if not isinstance(row, StatementImport)
-                    else {"count": len(row.rows), "rows": row.rows[:20], "basis": row.basis}
+                    else {
+                        "count": len(row.rows),
+                        "rows": row.rows[query.statement_offset : query.statement_offset + 20],
+                        "next_statement_offset": query.statement_offset + 20
+                        if len(row.rows) > query.statement_offset + 20
+                        else None,
+                        "basis": row.basis,
+                    }
                 )
                 objects.append({"ref": ref, "state": state, "changeset_ref": row.changeset_ref})
         if query.account_ref:

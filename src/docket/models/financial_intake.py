@@ -61,6 +61,7 @@ class FinancialCandidate(Base):
     purchase_key: Mapped[str | None] = mapped_column(String(64), index=True)
     disposition: Mapped[str] = mapped_column(String(40))
     expense_ref: Mapped[str | None] = mapped_column(ForeignKey("expenses.ref_id"))
+    expense_revision_ref: Mapped[str | None] = mapped_column(ForeignKey("expense_revisions.ref_id"))
     activity_ref: Mapped[str | None] = mapped_column(ForeignKey("funding_activity.ref_id"))
     instrument_revision_ref: Mapped[str | None] = mapped_column(
         ForeignKey("funding_revisions.ref_id")
