@@ -58,7 +58,7 @@ only after an observed complete period.
 Record tax treatments for the selected expense revision, year and jurisdiction.
 Asset review and missing evidence remain open dispositions. Report paystubs and
 annual forms against the same engagement. Mark cumulative figures as year_to_date.
-An agent reads the source and supplies the supported figures. Docket checks
+Text-based PDF or email intake proposes uniquely labelled amounts with source anchors. Unreadable or ambiguous layouts stay unresolved. An agent can supply figures supported by the original. Record taxable wages separately from gross pay. Docket checks
 their relationships and arithmetic. An annual form can corroborate a paystub
 without creating a deposit. Retain a report reference to reproduce its earlier
 figures after corrections.

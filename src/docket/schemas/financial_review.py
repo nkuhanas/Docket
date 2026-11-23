@@ -90,7 +90,12 @@ class IncomeEvidence(Revision):
     period_end: date
     source_ref: ReceiptRef
     currency: Currency
-    gross: Amount
+    gross: Amount | None = Field(
+        default=None, description="Gross pay or documented gross nonemployee compensation."
+    )
+    taxable_wages: Amount | None = Field(
+        default=None, description="Reported taxable wages for this jurisdiction."
+    )
     withheld: Amount | None = None
     net: Amount | None = None
     payment_ref: PaymentRef | None = None
@@ -98,6 +103,14 @@ class IncomeEvidence(Revision):
         default=None, description="Previously documented settlement withholding for this period."
     )
     coverage: Literal["period", "year_to_date", "annual"]
+
+    @model_validator(mode="after")
+    def quantities(self) -> "IncomeEvidence":
+        if all(
+            value is None for value in (self.gross, self.taxable_wages, self.withheld, self.net)
+        ):
+            raise ValueError("Supply at least one documented income or withholding amount.")
+        return self
 
 
 class WithdrawFact(StrictModel):

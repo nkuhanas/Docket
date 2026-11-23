@@ -1,6 +1,6 @@
 """Conserve observed money across expenses, tax payments and transfer legs."""
 
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Any
 
 from pydantic import BaseModel
@@ -120,6 +120,10 @@ class FinancialReviewService:
         return svc.revision(head)
 
     def apply(self, session: Session, changeset: Any, change: Any) -> list[str]:
+        with localcontext(prec=64):
+            return self.apply_review(session, changeset, change)
+
+    def apply_review(self, session: Session, changeset: Any, change: Any) -> list[str]:
         owner = require_principal("commit").operator_ref
         lock_review(session, owner)
         kind = change.object_type
@@ -396,9 +400,7 @@ class FinancialReviewService:
                         and row.fields.get(name) == f[name]
                         and row.fields["jurisdiction"] == f["jurisdiction"]
                     ):
-                        raise reject(
-                            "This money is already attributed to another payroll period."
-                        )
+                        raise reject("This money is already attributed to another payroll period.")
         if f.get("payment_ref"):
             payment = FinancialState(self.session).payments.get(f["payment_ref"])
             if (

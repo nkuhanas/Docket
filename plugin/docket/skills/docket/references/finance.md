@@ -112,6 +112,6 @@ a review finding when a covered period warrants it.
 
 Upload a paystub, W-2 or 1099 with evidence_role set to income_document. Retain
 the protected source and record supported period or annual amounts against that
-source and engagement. Use statement for card statements. Keep declared
+source and engagement. Intake can suggest explicitly labelled amounts with source anchors. Preserve reported taxable wages separately from gross pay. Use statement for card statements. Keep declared
 business use, reviewed deductions, gross wages, net payments and corroborating
 annual figures distinct. Report unresolved amounts and coverage.

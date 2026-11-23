@@ -3,7 +3,7 @@
 import calendar
 from collections import defaultdict
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from fractions import Fraction
 from itertools import pairwise
 from typing import Any
@@ -100,6 +100,10 @@ class AnnualWorkpapers:
         return day is None or str(day)[:4] == str(self.year)
 
     def build(self) -> dict[str, list[dict[str, Any]]]:
+        with localcontext(prec=64):
+            return self.calculate_sections()
+
+    def calculate_sections(self) -> dict[str, list[dict[str, Any]]]:
         self.expenses()
         self.activity()
         self.recurring()
@@ -124,7 +128,10 @@ class AnnualWorkpapers:
                     role=role,
                 )
         for c, intake in self.candidates[None]:
-            if intake.source_ref in covered_sources:
+            if (
+                intake.source_ref in covered_sources
+                or intake.declarations.get("evidence_role") == "income_document"
+            ):
                 continue
             if self.eligible_year(
                 c.facts.get("incurred_on") or intake.created_at.date()
@@ -577,10 +584,10 @@ class AnnualWorkpapers:
                 k: sum(Decimal(r.fields[k]) for r in supported)
                 if all(k in r.fields for r in supported)
                 else None
-                for k in ("gross", "withheld", "net")
+                for k in ("gross", "taxable_wages", "withheld", "net")
             }
             if annual and period:
-                for field in ("gross", "withheld"):
+                for field in ("gross", "taxable_wages", "withheld"):
                     expected = annual[0].fields.get(field)
                     if expected is not None and totals[field] != Decimal(expected):
                         self.issue(
@@ -599,7 +606,7 @@ class AnnualWorkpapers:
                     if ytd.fields["period_start"] <= r.fields["period_start"]
                     and r.fields["period_end"] <= ytd.fields["period_end"]
                 ]
-                for column in ("gross", "withheld"):
+                for column in ("gross", "taxable_wages", "withheld"):
                     expected_ytd = ytd.fields.get(column)
                     if expected_ytd is None:
                         continue
@@ -634,19 +641,24 @@ class AnnualWorkpapers:
                 # A separately classified settlement deduction may be the same withheld money.
                 # Until attributed to this pay evidence its overlap is unresolved.
                 linked = {r.fields.get("withholding_allocation_ref") for r in supported} - {None}
-                standalone = {
-                    r.ref_id
-                    for r in self.facts
-                    if r.kind == "tax_allocation"
-                    and r.fields["kind"] == "withholding"
-                    and (
-                        r.fields.get("tax_year"),
-                        r.fields["jurisdiction"],
-                        r.fields["currency"],
-                        r.fields["tax_type"],
+                standalone = set()
+                for fact in self.facts:
+                    allocation = fact.fields
+                    if fact.kind != "tax_allocation" or allocation["kind"] != "withholding":
+                        continue
+                    if (
+                        allocation.get("tax_year"),
+                        allocation["jurisdiction"],
+                        allocation["currency"],
+                        allocation["tax_type"],
+                    ) != (self.year, jurisdiction, cur, tax_type):
+                        continue
+                    entry = self.state.by_ref.get(allocation["deduction_ref"])
+                    target = (
+                        self.state.sources.targets.get(entry.target_ref or "", {}) if entry else {}
                     )
-                    == (self.year, jurisdiction, cur, tax_type)
-                }
+                    if target.get("engagement_ref") in (None, engagement):
+                        standalone.add(fact.ref_id)
                 if (
                     standalone - linked
                     or linked - standalone
@@ -693,7 +705,10 @@ class AnnualWorkpapers:
                     tax_type=tax_type,
                     basis_refs=refs,
                     payment_refs=payment_refs,
-                    reported_gross=str(totals["gross"]),
+                    reported_gross=number(totals["gross"]) if totals["gross"] is not None else None,
+                    reported_taxable_wages=number(totals["taxable_wages"])
+                    if totals["taxable_wages"] is not None
+                    else None,
                     reported_net=number(totals["net"]) if totals["net"] is not None else None,
                     received=number(received),
                     reported_withholding=number(totals["withheld"])
@@ -751,7 +766,10 @@ class AnnualWorkpapers:
             if (
                 not comparisons
                 or key in cross_year
-                or any(Decimal(r["reported_gross"]) != amounts[key] for r in comparisons)
+                or any(
+                    r["reported_gross"] is None or Decimal(r["reported_gross"]) != amounts[key]
+                    for r in comparisons
+                )
             ):
                 self.issue(
                     "compensation_coverage",

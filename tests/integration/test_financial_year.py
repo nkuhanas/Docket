@@ -241,9 +241,14 @@ async def test_financial_year_end_to_end(session_factory, linked_plugin, monkeyp
             )
         form = await upload(
             "income-doc",
-            "From: test@example.test\r\nSubject: Payroll\r\n\r\nEvidence only",
+            (
+                "From: test@example.test\r\nSubject: Payroll\r\n\r\n"
+                "Taxable wages: USD 1900\r\nFederal income tax withheld: USD 400"
+            ),
             evidence_role="income_document",
         )
+        assert form["outcomes"][0]["facts"]["taxable_wages"] == "1900"
+        assert "gross" not in form["outcomes"][0]["facts"]
         source = form["source_ref"]
         basis = dict(
             engagement_ref=eng,
@@ -446,3 +451,38 @@ async def test_statement_renewal_asset_review_and_protected_export(
                 assert archive.extractfile("originals/" + source).read() == statement
             with pytest.raises(ValueError, match="references"):
                 write_members(db, settings, report["report_ref"], ["other"], io.BytesIO())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": False}], indirect=True)
+async def test_financial_review_tool_budgets_and_read_authority(linked_plugin):
+    import json
+
+    from docket.plugin.server import PluginMCP
+
+    tools = {tool.name: tool for tool in await PluginMCP(linked_plugin[1]).list_tools()}
+    names = [
+        "docket_get_financial_year",
+        "docket_create_activity_match",
+        "docket_create_recurring_expense",
+        "docket_create_expense_treatment",
+        "docket_create_tax_allocation",
+        "docket_create_income_evidence",
+        "docket_create_financial_withdrawal",
+        "docket_create_financial_year_review",
+    ]
+    for name in names:
+        definition = tools[name].model_dump(mode="json", by_alias=True, exclude_none=True)
+        assert len(json.dumps(definition["inputSchema"]).encode()) <= 4096, name
+        assert len(json.dumps(definition).encode()) <= 6144, name
+    async with work_client(linked_plugin) as call:
+        packet = await call("docket_get_financial_year", dict(tax_year=2026))
+        result = await call(
+            "docket_create_financial_year_review",
+            dict(
+                context_id=packet["context_id"],
+                operation_id="read-only-review",
+                report_ref=packet["report_ref"],
+            ),
+        )
+        assert result["error"]["code"] == "agent_authority_denied"

@@ -2313,7 +2313,7 @@ async def check():
     try:
         command.downgrade(config, "20261104e3f4")
     except RuntimeError as exc:
-        assert str(exc) == "Retained financial evidence or collector authority prevents downgrade"
+        assert str(exc) == "Retained financial workpapers prevent downgrade"
     else:
         raise AssertionError("Downgrade discarded populated work history")
     from alembic.runtime.migration import MigrationContext

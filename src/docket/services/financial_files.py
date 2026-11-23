@@ -6,6 +6,7 @@ import http.client
 import io
 import re
 import ssl
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 from email import policy
@@ -164,12 +165,42 @@ def purchase_key(facts: dict[str, Any]) -> str | None:
     return sha256_json([facts["vendor"].casefold(), facts["document_id"]])
 
 
-def pdf_text(blob: bytes, anchor: str) -> list[dict[str, Any]]:
+def payroll(text: str, anchor: str) -> dict[str, Any]:
+    """Extract only explicit, uniquely labelled amounts. Never retain free-form payroll text."""
+    labels = {
+        "gross pay": "gross",
+        "gross wages": "gross",
+        "nonemployee compensation": "gross",
+        "taxable wages": "taxable_wages",
+        "wages, tips, other compensation": "taxable_wages",
+        "federal income tax withheld": "withheld",
+        "withheld": "withheld",
+        "net pay": "net",
+    }
+    found: dict[str, set[tuple[str, str]]] = {}
+    for line in text.splitlines():
+        match = re.fullmatch(r"\s*([^:]{1,60}):\s*([A-Z]{3})\s+(\d{1,18}(?:\.\d{1,9})?)\s*", line)
+        if match and (field := labels.get(match[1].strip().casefold())):
+            found.setdefault(field, set()).add((match[2], match[3]))
+    result: dict[str, Any] = {"anchor": anchor}
+    currencies = {currency for values in found.values() for currency, _ in values}
+    if len(currencies) == 1:
+        result["currency"] = currencies.pop()
+        for name, values in found.items():
+            if len(values) == 1:
+                result[name] = next(iter(values))[1]
+    return result
+
+
+TextFacts = Callable[[str, str], dict[str, Any]]
+
+
+def pdf_text(blob: bytes, anchor: str, parse: TextFacts = purchase) -> list[dict[str, Any]]:
     reader = PdfReader(io.BytesIO(blob), strict=True)
     if reader.is_encrypted or len(reader.pages) > 25:
         return []
     return [
-        purchase((page.extract_text() or "")[:32000], f"{anchor}/page/{i}")
+        parse((page.extract_text() or "")[:32000], f"{anchor}/page/{i}")
         for i, page in enumerate(reader.pages, 1)
     ]
 
@@ -199,10 +230,11 @@ class BillingText(HTMLParser):
             self.parts.append(data)
 
 
-def extract(blob: bytes, media: str) -> list[dict[str, Any]]:
+def extract(blob: bytes, media: str, *, income: bool = False) -> list[dict[str, Any]]:
+    parse = payroll if income else purchase
     facts: list[dict[str, Any]] = []
     if media == "application/pdf":
-        facts = pdf_text(blob, "file")
+        facts = pdf_text(blob, "file", parse)
     if media == "message/rfc822":
         message = BytesParser(policy=policy.default).parsebytes(blob)
         size = 0
@@ -217,17 +249,20 @@ def extract(blob: bytes, media: str) -> list[dict[str, Any]]:
                 raise rejected("message_part_limit")
             anchor = f"mime/{i}"
             if part.get_content_type() == "text/plain":
-                facts.append(purchase(data[:64000].decode("utf-8", errors="replace"), anchor))
+                facts.append(parse(data[:64000].decode("utf-8", errors="replace"), anchor))
             elif part.get_content_type() == "text/html":
                 parser = BillingText()
                 parser.feed(data[:64000].decode("utf-8", errors="replace"))
-                facts.append(purchase("".join(parser.parts), anchor))
+                facts.append(parse("".join(parser.parts), anchor))
             elif part.get_content_type() == "application/pdf" and data.startswith(b"%PDF-"):
-                facts += pdf_text(data, anchor)
+                facts += pdf_text(data, anchor, parse)
     # Keep competing assertions visible while combining identical representations.
     unique: dict[str, dict[str, Any]] = {}
     for item in facts:
-        if "amount" not in item and "vendor" not in item:
+        if not (
+            set(item)
+            & ({"gross", "taxable_wages", "withheld", "net"} if income else {"amount", "vendor"})
+        ):
             continue
         fingerprint = hashlib.sha256(
             str(sorted((k, v) for k, v in item.items() if k != "anchor")).encode()

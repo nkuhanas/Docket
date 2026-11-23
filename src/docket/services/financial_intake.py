@@ -148,19 +148,39 @@ class FinancialIntakeService:
         )
         if row is None:
             return None
-        if row.declarations.get("evidence_role") in ("income_document", "statement"):
+        if row.declarations.get("evidence_role") == "statement":
             row.status, row.reason = "complete", "original_retained_for_review"
             return row
         # Storage faults roll back for retry. Extraction failures preserve the source.
         raw = attachment_store(self.session, self.settings).plaintext(row.source_ref)
         try:
-            extracted = extract(raw, row.media_type)
+            extracted = extract(
+                raw,
+                row.media_type,
+                income=row.declarations.get("evidence_role") == "income_document",
+            )
         except Exception:
             row.status, row.reason = "failed", "unreadable_original"
             extracted = []
         else:
             row.status = "complete" if extracted else "partial"
             row.reason = None if extracted else "financial_facts_unresolved"
+        if row.declarations.get("evidence_role") == "income_document":
+            for index, facts in enumerate(extracted):
+                self.session.add(
+                    FinancialCandidate(
+                        source_ref=row.source_ref,
+                        ordinal=index,
+                        facts=facts,
+                        disposition="evidence_only",
+                        review_reason="confirm_income_basis",
+                    )
+                )
+            if row.status != "failed":
+                row.status = "complete" if extracted else "partial"
+                row.reason = "confirm_income_basis" if extracted else "income_layout_unresolved"
+            self.session.flush()
+            return row
         for index, facts in enumerate(extracted or [{"anchor": "file"}]):
             key = purchase_key(facts)
             enough = not facts.get("review_only") and all(
@@ -190,6 +210,7 @@ class FinancialIntakeService:
             select(FinancialIntake)
             .where(
                 FinancialIntake.status == "partial",
+                FinancialIntake.declarations["evidence_role"].as_string().is_(None),
                 FinancialIntake.inference_attempts < 3,
                 (
                     FinancialIntake.next_attempt.is_(None)
@@ -337,6 +358,8 @@ class FinancialIntakeService:
         if candidate is None:
             raise rejected("candidate_unavailable")
         src = self.owned(candidate.source_ref)
+        if src.declarations.get("evidence_role") == "income_document":
+            raise rejected("use_income_evidence_command")
         if changeset.expected_versions.get(candidate.ref_id) != candidate.version:
             raise rejected("candidate_version_conflict")
         choice = ResolveEvidence.model_validate(change.payload)

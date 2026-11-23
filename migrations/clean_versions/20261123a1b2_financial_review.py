@@ -38,6 +38,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if op.get_bind().scalar(sa.text("SELECT count(*) FROM financial_review_facts")):
+    reports = sa.table("financial_report_snapshots", sa.column("parameters_json", sa.JSON))
+    retained_report = (
+        sa.select(sa.literal(1))
+        .select_from(reports)
+        .where(reports.c.parameters_json["report_kind"].as_string() == "financial_year")
+        .limit(1)
+    )
+    if op.get_bind().scalar(
+        sa.text("SELECT count(*) FROM financial_review_facts")
+    ) or op.get_bind().scalar(retained_report):
         raise RuntimeError("Retained financial workpapers prevent downgrade")
     op.drop_table("financial_review_facts")
