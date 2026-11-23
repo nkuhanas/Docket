@@ -45,7 +45,28 @@
   "host_fixture": {
     "path": "synthetic-receipt.pdf",
     "sha256": "c346d0c14004510b8d0b74f5463c837228415dfcb7f3e6bc7bc9bd9585038ffb",
-    "chatgpt_file_handoff": "pending"
+    "chatgpt_file_handoff": "passed",
+    "source_ref": "src_01M82Z7R9WKTY4B6DRFFJS0XB9",
+    "accepted_at": "2026-11-23T01:09:58.730761Z",
+    "verified_at": "2026-11-23T01:11:08Z",
+    "authenticated_request_link_verified": true,
+    "retained_original_sha256_matches_fixture": true,
+    "original_bytes": 765,
+    "media_type": "application/pdf",
+    "declared_business_use_percent": "60",
+    "submission_extraction": "pending",
+    "verified_extraction": "complete",
+    "candidate_count": 1,
+    "candidate": {
+      "vendor": "Example Fixture",
+      "amount": "1.00",
+      "currency": "USD",
+      "disposition": "candidate_created",
+      "review_reason": "adoption_pending",
+      "expense_linked": false,
+      "posted_activity_linked": false
+    },
+    "expense_revisions_for_source": 0
   },
   "purelymail": {
     "backfill_start": "2026-11-22",
