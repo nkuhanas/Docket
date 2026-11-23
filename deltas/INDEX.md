@@ -13,7 +13,7 @@ Current specification: [SPEC 1.4](../SPEC.md).
 
 | Proposal | Review status |
 | --- | --- |
-| [2026-11-22T21-38-05Z — invoice numbering and external artifact evidence](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Proposed against SPEC 1.2. Reuses revision-pinned invoice JSON. Pending review on early numbering/date and minimum evidence for a selected file. |
+| [2026-11-22T21-38-05Z — issue an invoice when preparing its export](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Revised against SPEC 1.4. Preparing the final JSON, Markdown or CSV issues the invoice once. Reopening and reissuing retain its number and financial history. Implementation paused. |
 
 ## Historical notes
 
