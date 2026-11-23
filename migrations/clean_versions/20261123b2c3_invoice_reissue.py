@@ -19,6 +19,16 @@ GUARDS = {
     ],
     "docket_document_allocation_guard": [
         (
+            "IF TG_OP = 'UPDATE' THEN",
+            """IF TG_OP = 'UPDATE' THEN
+            IF NEW.status = 'issued' AND EXISTS (
+                SELECT 1 FROM document_allocations a WHERE a.operator_ref = NEW.operator_ref
+                AND a.source_key = NEW.source_key AND a.status = 'issued' AND a.ref_id <> NEW.ref_id
+                AND a.start_units::numeric < NEW.end_units::numeric
+                AND a.end_units::numeric > NEW.start_units::numeric
+            ) THEN RAISE EXCEPTION 'An issued invoice quantity overlaps another active issue'; END IF;""",
+        ),
+        (
             "OLD.status <> 'reserved' OR",
             """NOT (OLD.status = 'reserved' OR
                     (OLD.status = 'issued' AND NEW.status = 'released' AND EXISTS (

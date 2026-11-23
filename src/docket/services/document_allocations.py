@@ -317,6 +317,20 @@ class DocumentAllocationService:
         self.session.flush()
         return {row.source_key for row in rows}
 
+    def number_at(self, revision: FinancialDocumentRevision) -> str | None:
+        return self.session.scalar(
+            select(InvoiceNumber.number)
+            .join(
+                FinancialDocumentRevision,
+                FinancialDocumentRevision.ref_id == InvoiceNumber.issued_revision_ref,
+            )
+            .where(
+                InvoiceNumber.document_ref == revision.document_ref,
+                InvoiceNumber.operator_ref == require_principal("read").operator_ref,
+                FinancialDocumentRevision.revision <= revision.revision,
+            )
+        )
+
     def number(self, revision: FinancialDocumentRevision, series: str) -> InvoiceNumber:
         require_principal("commit")
         document = self.document(revision.document_ref)

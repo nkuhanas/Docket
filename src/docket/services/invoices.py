@@ -89,7 +89,6 @@ class InvoiceService:
     def view(self, head: FinancialDocument, revision: FinancialDocumentRevision) -> dict[str, Any]:
         body = revision.snapshot_json
         header = body["header"]
-        number = self.session.get(InvoiceNumber, head.ref_id)
         observations = list(
             self.session.scalars(
                 select(FinancialDocumentObservation)
@@ -118,9 +117,7 @@ class InvoiceService:
             "summary": body["summary"],
             "claim_count": len(body["claim_refs"]),
             "allocation_count": len(body["allocation_refs"]),
-            "number": number.number
-            if number and (revision.status == "issued" or body.get("issued_at"))
-            else None,
+            "number": self.allocations.number_at(revision),
             "due_on": header.get("due_on"),
             "client_label": header["client_label"][:200],
             "reconciliation_flags": self.flags(revision),
@@ -319,10 +316,9 @@ class InvoiceService:
             return [head.ref_id, observation.ref_id]
         if spec.status == head.status and spec.status in {"draft", "issued"}:
             return [head.ref_id, previous.ref_id]
+        numbered = self.session.get(InvoiceNumber, head.ref_id) is not None
         reopening = head.status == "issued" and spec.status == "draft"
-        if (head.status != "draft" and not reopening) or (
-            spec.status == "cancelled" and previous.snapshot_json.get("issued_at")
-        ):
+        if (head.status != "draft" and not reopening) or (spec.status == "cancelled" and numbered):
             raise document_error(
                 "invoice_snapshot_final",
                 "An issued invoice needs an explicit credit or adjustment.",
@@ -344,7 +340,7 @@ class InvoiceService:
         body = {**previous.snapshot_json}
         if spec.status == "issued":
             assert spec.issued_at is not None
-            if body.get("issued_at"):
+            if numbered:
                 body["reissued_at"] = spec.issued_at.isoformat()
             else:
                 body["issued_at"] = spec.issued_at.isoformat()
@@ -369,7 +365,7 @@ class InvoiceService:
             self.work.audit(head, revision.ref_id, changeset, change)
             return [head.ref_id, revision.ref_id]
         retired_keys: set[str] = set()
-        if spec.status == "issued" and previous.snapshot_json.get("issued_at"):
+        if spec.status == "issued" and numbered:
             retired_keys = self.allocations.retire_superseded(revision)
         self.allocations.transition(
             head.ref_id, "issued" if spec.status == "issued" else "released", revision

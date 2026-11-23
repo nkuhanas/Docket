@@ -14,11 +14,11 @@ from docket.domain.errors import DocketError
 from docket.models import (
     CompensationEvaluation,
     FinancialDocumentRevision,
-    InvoiceNumber,
     WorkSessionRevision,
 )
 from docket.schemas.common import StrictModel
 from docket.schemas.financial_documents import ReadDocument
+from docket.services.document_allocations import DocumentAllocationService
 from docket.services.financial_documents import FinancialDocumentService
 from docket.services.work_reports import compact
 
@@ -92,7 +92,6 @@ class FinancialDocumentReadService:
         assert evaluation is not None
         if head.kind == "invoice":
             body = revision.snapshot_json
-            number = self.session.get(InvoiceNumber, head.ref_id)
             return {
                 "document_ref": head.ref_id,
                 "revision_ref": revision.ref_id,
@@ -116,9 +115,7 @@ class FinancialDocumentReadService:
                 "issued_at": body.get("issued_at"),
                 **({"reissued_at": body["reissued_at"]} if "reissued_at" in body else {}),
                 "invoice_calculation_version": body.get("invoice_calculation_version"),
-                "number": number.number
-                if number and (revision.status == "issued" or body.get("issued_at"))
-                else None,
+                "number": DocumentAllocationService(self.session).number_at(revision),
                 "lines": body["lines"],
                 "policy_basis": evaluation.result_json["basis"],
                 "basis_refs": revision.basis_refs,

@@ -549,6 +549,7 @@ async def check_compensation_policies(settings, factory, principal):
 async def check_native_invoices(settings, factory, principal, config):
     from docket.agent_auth import AgentCallContext, agent_call_context
     from docket.models import (
+        DocumentAllocation,
         FinancialDocumentObservation,
         FinancialDocumentRevision,
         InvoiceNumber,
@@ -810,6 +811,21 @@ async def check_native_invoices(settings, factory, principal, config):
     await change(
         "docket_refresh_invoice", [ref], "pg-cut-invoice", invoice_ref=ref, max_work_minutes=30
     )
+    # A draft can propose edits over its previous issue, but two active issues
+    # cannot consume the same units even through a direct database writer.
+    try:
+        with factory.begin() as session:
+            session.execute(
+                update(DocumentAllocation)
+                .where(
+                    DocumentAllocation.document_ref == ref, DocumentAllocation.status == "reserved"
+                )
+                .values(status="issued", version=DocumentAllocation.version + 1)
+            )
+    except DBAPIError as exc:
+        assert "overlaps another active issue" in str(exc.orig)
+    else:
+        raise AssertionError("PostgreSQL allowed duplicate posting of a corrected source range")
     fixed = await desired_race("issued", "corrected-issue")
     assert fixed["gross_estimates"][0]["amount"] == "40.00"
     export = await call("docket_read_document", {"cursor": fixed["export_cursor"]})
