@@ -8,6 +8,16 @@ Submit an original PDF, JPEG, PNG, EML or CSV using `docket_submit_financial_evi
 
 Use `docket_create_account_activity` for manual observations. For a statement, supply the retained CSV source and account together in a funding context. Preview `docket_create_statement_import` before accepting the mapping. CSV uses ISO `posted_on`, `description`, signed `amount` (negative for outflows), and `currency`. Optional columns are `external_id`, `kind`, `state` and `corrects_ref`. Use stable account-scoped bank IDs where available. Inspect the resulting statement and activity refs. A card repayment can be recorded as a transfer. The original economic cost retains its own identity.
 
+### Recover an attachment handoff
+
+The connected client supplies a temporarily authorized download URL with the selected
+attachment. A bare file ID or local file reference reaching Docket returns
+`file_attachment_not_bound`. An unapproved initial URL returns `file_host_not_approved`.
+A blocked redirect returns `file_redirect_not_approved`. A missing, expired or inaccessible
+file at the approved service can return `file_download_unavailable`. These errors occur
+before source acceptance. Select the original attachment again and retry the same operation.
+Share only the error code when troubleshooting. Signed URLs are private.
+
 ## Dedicated billing mailbox
 
 The operator enrolls the IMAP-only Purelymail application password from a private terminal at the repository root. The label is `docket-integration`. Enrollment can be repeated to rotate the mail password. The Docket source identity and existing receipts survive rotation.

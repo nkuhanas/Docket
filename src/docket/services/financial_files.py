@@ -38,8 +38,14 @@ def rejected(code: str) -> DocketError:
 def download_file(url: str, hosts: frozenset[str], limit: int) -> bytes:
     """Fetch short-lived capabilities without logging the URL or following arbitrary hosts."""
     try:
-        for _ in range(4):
+        for hop in range(4):
             parts = urlsplit(url)
+            if hop == 0 and parts.scheme in ("", "sandbox", "file", "attachment", "file-service"):
+                raise DocketError(
+                    code="file_attachment_not_bound",
+                    message="Select the original attachment in the tool's file field and retry "
+                    "with the same operation ID. The client must supply its download link.",
+                )
             if (
                 parts.scheme != "https"
                 or not parts.hostname
@@ -48,11 +54,23 @@ def download_file(url: str, hosts: frozenset[str], limit: int) -> bytes:
                     for h in hosts
                 )
                 or parts.port not in (None, 443)
-                or parts.username
-                or parts.password
+                or parts.username is not None
+                or parts.password is not None
                 or parts.fragment
             ):
-                raise rejected("file_host_not_approved")
+                if hop:
+                    raise DocketError(
+                        code="file_redirect_not_approved",
+                        message="The attachment download redirected outside the approved HTTPS "
+                        "destinations. Re-select the original file and retry with the same "
+                        "operation ID.",
+                    )
+                raise DocketError(
+                    code="file_host_not_approved",
+                    message="The supplied link is outside the approved HTTPS file destinations. "
+                    "Pass the original attachment through the client's file field and retry "
+                    "with the same operation ID.",
+                )
             connection = http.client.HTTPSConnection(
                 parts.hostname, timeout=10, context=ssl.create_default_context()
             )
@@ -67,6 +85,13 @@ def download_file(url: str, hosts: frozenset[str], limit: int) -> bytes:
                     url = urljoin(url, location)
                     continue
                 if response.status != 200:
+                    if response.status in (401, 403, 404, 410):
+                        raise DocketError(
+                            code="file_download_unavailable",
+                            message="The file service could not provide this attachment. "
+                            "Re-select it to obtain a fresh download link and retry with "
+                            "the same operation ID.",
+                        )
                     break
                 data = response.read(limit + 1)
                 if not data or len(data) > limit:

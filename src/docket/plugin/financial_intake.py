@@ -163,8 +163,9 @@ def register_financial_intake(server: ProvenanceMCP, settings: Settings) -> None
         model_function(SubmitEvidence, "docket_submit_financial_evidence", submit),
         name="docket_submit_financial_evidence",
         description=(
-            "Submit an original receipt, EML or statement. Report operator declarations. "
-            "May record an unambiguous expense. Follow the receipt for unresolved funding."
+            "Pass the original chat attachment in file. Let the client supply its download link. "
+            "Report only explicit declarations. May record an unambiguous expense. "
+            "On a handoff error, re-select the attachment and reuse the operation ID."
         ),
         annotations=ToolAnnotations(
             read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True
