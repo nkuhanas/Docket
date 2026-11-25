@@ -164,7 +164,8 @@ def register_financial_intake(server: ProvenanceMCP, settings: Settings) -> None
         name="docket_submit_financial_evidence",
         description=(
             "Pass the original chat attachment in file. Let the client supply its download link. "
-            "Report only explicit declarations. May record an unambiguous expense. "
+            "Supply the stated business-use percentage. Docket defaults claim intent for that "
+            "share. May record an unambiguous expense. "
             "On a handoff error, re-select the attachment and reuse the operation ID."
         ),
         annotations=ToolAnnotations(

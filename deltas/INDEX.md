@@ -1,6 +1,6 @@
 # Forward delta index
 
-Current specification: [SPEC 1.5](../SPEC.md).
+Current specification: [SPEC 1.6](../SPEC.md).
 
 | Delta | Adoption | Implementation |
 | --- | --- | --- |
@@ -9,6 +9,7 @@ Current specification: [SPEC 1.5](../SPEC.md).
 | [2026-11-06T17-59-26Z — Google Tasks and NocoDB retirement](2026-11-06T17-59-26Z-google-tasks-and-nocodb-retirement.md) | Adopted into SPEC 1.2 by Operator implementation goal | Complete: deployed from 4236a81e55fd (initial activation c7d25789ecfb): source-bound release/PostgreSQL checks and actual runtime method admission pass; same private plugin is 2.2.1. Exact NocoDB runtime/storage/images and fifteen aliases retired. Fresh ChatGPT Tasks context passes in the [host read receipt](../evidence/google-tasks-retirement/host-context.json). [Activation receipt](../evidence/google-tasks-retirement/activation.json) and [acceptance matrix](../docs/google-tasks-implementation.md) include successful [native write journeys](../evidence/google-tasks-retirement/native-journey.json). Intended-device popup and exact fixture cleanup pass in the [device receipt](../evidence/google-tasks-retirement/device-acceptance.json). JSON/CSV exports pass release and fresh host acceptance, with eight rows and thirteen fields confirmed by the actual v69 invocation in the [final receipt](../evidence/google-tasks-retirement/exports-activation.json). All R0/G0/G1/G2/G3/R1/A milestones are complete |
 | [2026-11-22T22-08-43Z — financial ingestion and tax records](2026-11-22T22-08-43Z-financial-ingestion-and-tax-records.md) | F1/F2 adopted in SPEC 1.3. F3–F5 adopted in SPEC 1.4, implementation and synthetic verification tracked separately. | Funding and shared intake deployed at 53cfd88, private plugin 2.3.0. ChatGPT file upload and live Purelymail collection verified, including original bytes, the standing declaration and replay. [Activation evidence](../evidence/financial-intake/activation.json). |
 | [2026-11-22T21-38-05Z — issue an invoice when preparing its export](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Adopted in SPEC 1.5. | Final exports, editable numbered invoices and revision-pinned settlement. |
+| [2026-11-25T21-30-03Z — expense claim intent](2026-11-25T21-30-03Z-expense-claim-intent.md) | Adopted in SPEC 1.6. | Receipt, expense evidence and fresh annual workpapers apply the declared share. |
 
 ## Historical notes
 

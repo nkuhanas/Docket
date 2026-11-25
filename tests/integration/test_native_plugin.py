@@ -522,6 +522,12 @@ async def test_native_delegation_commits_replays_and_optionally_records_context(
     ):
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
         assert set(tools) == contract_tool_names("plugin")
+        upload = tools["docket_submit_financial_evidence"]
+        fields = upload.input_schema["properties"]
+        assert fields["business_use_percent"]["type"] == "number"
+        assert fields["write_off_intent"]["type"] == "boolean"
+        assert "write_off_intent" not in upload.input_schema["required"]
+        assert upload.meta["openai/fileParams"] == ["file"]
         assert not (
             {"docket_stage_changes", "docket_review_changeset", "docket_commit_changeset"}
             & set(tools)

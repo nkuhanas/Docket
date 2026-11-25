@@ -104,6 +104,8 @@ async def test_financial_year_end_to_end(session_factory, linked_plugin, monkeyp
         first = await context(section="expenses")
         expense = first["rows"][0]
         assert Decimal(expense["declared_amount"]) == 72 and expense["tax_status"] == "unreviewed"
+        assert Decimal(expense["intended_claim_amount"]) == 72
+        assert expense["declarations"][0]["write_off_intent_origin"] == "positive_business_use_v1"
         assert Decimal(expense["funded"]) == 0
         old = await context()
         review = await call(
@@ -307,6 +309,32 @@ async def test_financial_year_end_to_end(session_factory, linked_plugin, monkeyp
             else:
                 assert count == expected
         assert stub and "withholding" in (await context(section="totals", format="csv"))["csv"]
+
+        opt_out_mail = mail.replace("DOC-101", "DOC-102")
+        opted_out = await upload(
+            "opt-out", opt_out_mail, business_use_percent=60, write_off_intent=False
+        )
+        ref = opted_out["outcomes"][0]["expense_ref"]
+        captured = await context(section="expenses")
+        row = next(r for r in captured["rows"] if r["expense_ref"] == ref)
+        assert Decimal(row["declared_amount"]) == 72 and row["intended_claim_amount"] == "0"
+        duplicate = await upload("also-reported", opt_out_mail, business_use_percent=60)
+        assert duplicate["outcomes"][0]["expense_ref"] == ref
+        assert not duplicate["outcomes"][0]["conflicting_declarations"]
+        overridden = await context(section="expenses")
+        assert next(r for r in overridden["rows"] if r["expense_ref"] == ref)[
+            "intended_claim_amount"
+        ] == "0"
+        conflict = await upload(
+            "explicit-claim", opt_out_mail, business_use_percent=60, write_off_intent=True
+        )
+        assert conflict["outcomes"][0]["conflicting_declarations"]
+        live = await context(section="expenses")
+        row = next(r for r in live["rows"] if r["expense_ref"] == ref)
+        assert row.get("intended_claim_amount") is None
+        assert (await context(section="expenses", report_ref=captured["report_ref"]))["rows"] == (
+            captured["rows"]
+        )
 
 
 @pytest.mark.asyncio

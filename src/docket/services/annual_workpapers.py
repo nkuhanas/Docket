@@ -27,7 +27,7 @@ from docket.models import (
     StatementImport,
 )
 from docket.models.base import utc_now
-from docket.services.financial_intake import FinancialIntakeService
+from docket.services.financial_intake import FinancialIntakeService, expense_declaration_values
 from docket.services.financial_review import FinancialReviewService, current_facts
 from docket.services.financial_state import FinancialState, amount_text
 
@@ -297,15 +297,8 @@ class AnnualWorkpapers:
                     possible_count=len(choices),
                     possible_refs=sorted(choices)[:8],
                 )
-            pct = {
-                Decimal(str(d["business_use_percent"]))
-                for d in declarations
-                if d.get("business_use_percent") is not None
-            }
-            if (
-                len(pct) > 1
-                or len({d["write_off_intent"] for d in declarations if "write_off_intent" in d}) > 1
-            ):
+            pct, intents = expense_declaration_values(declarations)
+            if len(pct) > 1 or len(intents) > 1:
                 self.issue(
                     "declaration_conflict",
                     ref,
@@ -313,6 +306,11 @@ class AnnualWorkpapers:
                     sources=[d["source_ref"] for d in declarations],
                 )
             proposed = amount * next(iter(pct)) / 100 if len(pct) == 1 else None
+            intended = None
+            if len(pct) <= 1 and intents == {False}:
+                intended = ZERO
+            elif intents == {True}:
+                intended = proposed
             active = [r for r in treatments if r.fields["tax_year"] == self.year]
             if not active:
                 self.issue(
@@ -378,6 +376,7 @@ class AnnualWorkpapers:
                     reimbursed=number(reimbursed),
                     matched_reimbursement=number(by_role["reimbursement"]),
                     declared_amount=number(proposed) if proposed is not None else None,
+                    intended_claim_amount=number(intended) if intended is not None else None,
                     declarations=declarations,
                     tax_status=tax_status,
                     match_refs=[r.ref_id for r in links],
