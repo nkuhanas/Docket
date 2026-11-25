@@ -96,8 +96,13 @@ cursor/chunk workflow; export_cursor restarts the captured basis. These commands
 create no bank transfer, payroll submission or provider delivery.
 
 Use docket_get_funding_context to manage non-secret funding accounts and cards.
-For an uploaded receipt or statement, pass the host file to docket_submit_financial_evidence
-with a stable operation_id and only explicit operator declarations. Use docket_get_financial_context
+For an uploaded receipt or statement, select the original attachment as the file input to
+docket_submit_financial_evidence. Let the client bind the file ID and temporary download
+URL. Never construct a link from a file ID, chat link or sandbox path. If the handoff
+fails, re-select the attachment with the same operation_id and declarations. Report acceptance
+only when the receipt returns source_accepted and a source_ref. A stated business-use
+percentage and card name supply business_use_percent and reported_instrument. Supply
+write_off_intent only when the operator declares it. Use docket_get_financial_context
 with its intake_ref for processing status. Link or adopt candidates with docket_update_financial_candidate.
 A posted charge, reviewed deduction and mailbox declaration each require their own basis.
 

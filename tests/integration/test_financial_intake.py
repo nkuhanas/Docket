@@ -85,7 +85,6 @@ async def test_attachment_tool_receipt_and_replay(linked_plugin, monkeypatch):
         b"From: pay@example.test\r\nTo: billing@example.test\r\nSubject: Receipt\r\n\r\n"
         b"Vendor: Example\r\nReceipt ID: X42\r\nTotal: USD 120.00\r\n"
     )
-    monkeypatch.setattr(native, "download_file", lambda *args: blob)
     async with work_client(linked_plugin) as call:
         context = await call("docket_get_funding_context", {})
         args = {
@@ -100,6 +99,12 @@ async def test_attachment_tool_receipt_and_replay(linked_plugin, monkeypatch):
                 "file_name": "receipt.eml",
             },
         }
+        bound_file = args["file"]
+        unbound = {**bound_file, "download_url": "sandbox:/synthetic-receipt"}
+        failed = await call("docket_submit_financial_evidence", {**args, "file": unbound})
+        assert failed["error"]["code"] == "file_attachment_not_bound"
+        assert "source_ref" not in failed
+        monkeypatch.setattr(native, "download_file", lambda *args: blob)
         receipt = await call("docket_submit_financial_evidence", args)
         assert receipt.get("source_accepted"), receipt
         assert receipt["original_sha256"] == hashlib.sha256(blob).hexdigest()
@@ -109,7 +114,12 @@ async def test_attachment_tool_receipt_and_replay(linked_plugin, monkeypatch):
             outcome["funding"] == "unresolved"
             and outcome["declarations"]["business_use_percent"] == "60"
         )
-        again = await call("docket_submit_financial_evidence", args)
+        def unexpected_fetch(*args):
+            pytest.fail("A retained receipt must be replayed without fetching the file again")
+
+        monkeypatch.setattr(native, "download_file", unexpected_fetch)
+        refreshed = {**bound_file, "download_url": "https://files.oaiusercontent.com/refreshed"}
+        again = await call("docket_submit_financial_evidence", {**args, "file": refreshed})
         assert (
             again["outcomes"] == receipt["outcomes"]
             and again["source_ref"] == receipt["source_ref"]
@@ -356,14 +366,23 @@ def test_download_host_boundary_and_private_capability(monkeypatch, caplog):
 
     monkeypatch.setattr(files.http.client, "HTTPSConnection", Connection)
     hosts = frozenset({"*.oaiusercontent.com"})
-    for url in (
-        "https://files.oaiusercontent.com/private?cap=synthetic-private",
-        "https://oaiusercontent.com.invalid/private?cap=synthetic-private",
+    approved_url = "https://files.oaiusercontent.com/private?cap=synthetic-private"
+    unapproved_url = "https://oaiusercontent.com.invalid/private?cap=synthetic-private"
+    for url, expected in (
+        ("file-demo", "file_attachment_not_bound"),
+        (approved_url, "file_redirect_not_approved"),
+        (unapproved_url, "file_host_not_approved"),
     ):
         with pytest.raises(DocketError) as rejected:
             files.download_file(url, hosts, 100)
-        assert rejected.value.code == "file_host_not_approved"
+        assert rejected.value.code == expected
+        assert "synthetic-private" not in str(rejected.value.as_dict())
     assert visited == ["files.oaiusercontent.com"]
+    monkeypatch.setattr(Redirect, "status", 403)
+    with pytest.raises(DocketError) as unavailable:
+        files.download_file(approved_url, hosts, 100)
+    assert unavailable.value.code == "file_download_unavailable"
+    assert "synthetic-private" not in str(unavailable.value.as_dict())
     assert "synthetic-private" not in caplog.text
 
 

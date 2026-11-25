@@ -18,7 +18,7 @@ from docket.schemas.work import WORK_TOOL_PURPOSES
 from docket.schemas.work_calendar import WORK_CALENDAR_PURPOSES
 from docket.schemas.workload import WORKLOAD_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-23-v72"
+CONTRACT_VERSION = "docket-tools-2026-11-25-v73"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -374,7 +374,9 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
     ("docket_update_task", "Update supplied task fields and observed due time."),
     *TASK_TOOL_PURPOSES.items(),
     ("docket_retract_record", "Retract a selected supported record through its domain handler."),
-    ("docket_submit_financial_evidence", "Retain a file and return its intake receipt."),
+    ("docket_submit_financial_evidence",
+     "Submit the selected original attachment through the host file input. The host binds "
+     "its download link. Re-select the attachment on a handoff error and reuse the operation ID."),
     ("docket_get_financial_year", "Read a pinned financial year, decisions, and evidence."),
     ("docket_get_funding_context", "Read owned funding identities and activity."),
     *WORK_TOOL_PURPOSES.items(),
