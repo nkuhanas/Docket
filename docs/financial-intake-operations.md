@@ -8,6 +8,13 @@ Submit an original PDF, JPEG, PNG, EML or CSV using `docket_submit_financial_evi
 
 Use `docket_create_account_activity` for manual observations. For a statement, supply the retained CSV source and account together in a funding context. Preview `docket_create_statement_import` before accepting the mapping. CSV uses ISO `posted_on`, `description`, signed `amount` (negative for outflows), and `currency`. Optional columns are `external_id`, `kind`, `state` and `corrects_ref`. Use stable account-scoped bank IDs where available. Inspect the resulting statement and activity refs. A card repayment can be recorded as a transfer. The original economic cost retains its own identity.
 
+For a manual expense upload, send the stated business-use percentage once. A
+positive percentage defaults to intent to claim that share. An explicit
+`write_off_intent=false` opts out. Zero or an omitted percentage supplies no default.
+Current receipts label derived intent with `write_off_intent_origin=positive_business_use_v1`,
+including on earlier submissions. Fresh annual workpapers show the intended claim
+amount alongside the business amount. Reviewed deductions require a tax-treatment decision.
+
 ### Recover an attachment handoff
 
 The connected client supplies a temporarily authorized download URL with the selected

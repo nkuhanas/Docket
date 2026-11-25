@@ -100,9 +100,11 @@ For an uploaded receipt or statement, select the original attachment as the file
 docket_submit_financial_evidence. Let the client bind the file ID and temporary download
 URL. Never construct a link from a file ID, chat link or sandbox path. If the handoff
 fails, re-select the attachment with the same operation_id and declarations. Report acceptance
-only when the receipt returns source_accepted and a source_ref. A stated business-use
-percentage and card name supply business_use_percent and reported_instrument. Supply
-write_off_intent only when the operator declares it. Use docket_get_financial_context
+only when the receipt returns source_accepted and a source_ref. For “60% business, Savor
+card,” pass business_use_percent=60 and reported_instrument="Savor". Docket treats
+that 60% as intended for claim. For “60% business, do not claim,” also pass
+write_off_intent=false. An omitted or zero percentage supplies no default intent.
+Use docket_get_financial_context
 with its intake_ref for processing status. Link or adopt candidates with docket_update_financial_candidate.
 A posted charge, reviewed deduction and mailbox declaration each require their own basis.
 

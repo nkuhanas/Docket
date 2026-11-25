@@ -25,6 +25,22 @@ from docket.services.financial_files import extract, media_type, purchase_key, r
 from docket.services.financial_inference import suggest
 from docket.services.funding import FundingService, attachment_store
 
+BUSINESS_USE_DEFAULT = "positive_business_use_v1"
+
+
+def expense_declaration_values(
+    declarations: list[dict[str, Any]],
+) -> tuple[set[Decimal], set[bool]]:
+    percentages = {
+        Decimal(str(d["business_use_percent"])) for d in declarations if "business_use_percent" in d
+    }
+    explicit = {
+        d["write_off_intent"] for d in declarations
+        if "write_off_intent" in d and d.get("write_off_intent_origin") != BUSINESS_USE_DEFAULT
+    }
+    intents = explicit or {d["write_off_intent"] for d in declarations if "write_off_intent" in d}
+    return percentages, intents
+
 
 class FinancialIntakeService:
     def __init__(self, session: Session, settings: Settings) -> None:
@@ -250,14 +266,31 @@ class FinancialIntakeService:
         )
 
     @staticmethod
-    def declaration(row: FinancialIntake, candidate: FinancialCandidate) -> dict[str, Any]:
-        if row.collector_ref and candidate.disposition != "evidence_only":
+    def declaration(
+        row: FinancialIntake, candidate: FinancialCandidate | None = None
+    ) -> dict[str, Any]:
+        if row.collector_ref and candidate and candidate.disposition != "evidence_only":
             return {
                 **row.policy_snapshot["declaration"],
                 "origin": "standing_policy",
                 "policy_revision": row.policy_snapshot["revision"],
             }
-        return row.declarations
+        reported = row.declarations
+        percent = reported.get("business_use_percent")
+        if (
+            row.request_ref
+            and not row.collector_ref
+            and not reported.get("evidence_role")
+            and reported.get("write_off_intent") is None
+            and percent is not None
+            and Decimal(str(percent)) > 0
+        ):
+            return {
+                **reported,
+                "write_off_intent": True,
+                "write_off_intent_origin": BUSINESS_USE_DEFAULT,
+            }
+        return reported
 
     def related_evidence(self, expense: str, owner: str) -> dict[str, Any]:
         rows = self.session.execute(
@@ -265,22 +298,9 @@ class FinancialIntakeService:
             .join(FinancialIntake)
             .where(FinancialCandidate.expense_ref == expense, FinancialIntake.operator_ref == owner)
             .order_by(FinancialIntake.created_at, FinancialCandidate.ordinal)
-            .limit(21)
         ).all()
         declarations = [self.declaration(i, c) for c, i in rows]
-        conflict = any(
-            len(
-                {
-                    str(Decimal(str(d[k])).normalize())
-                    if k == "business_use_percent"
-                    else str(d[k])
-                    for d in declarations
-                    if k in d
-                }
-            )
-            > 1
-            for k in ("business_use_percent", "write_off_intent")
-        )
+        percentages, intents = expense_declaration_values(declarations)
         return {
             "evidence": [
                 {
@@ -288,12 +308,12 @@ class FinancialIntakeService:
                     "candidate_ref": c.ref_id,
                     "activity_ref": c.activity_ref,
                     "instrument_revision_ref": c.instrument_revision_ref,
-                    "declarations": self.declaration(i, c),
+                    "declarations": declaration,
                 }
-                for c, i in rows[:20]
+                for (c, i), declaration in zip(rows[:20], declarations[:20], strict=True)
             ],
             "more_evidence": len(rows) > 20,
-            "conflicting_declarations": conflict,
+            "conflicting_declarations": len(percentages) > 1 or len(intents) > 1,
         }
 
     def receipt(self, row: FinancialIntake, offset: int = 0, limit: int = 8) -> dict[str, Any]:
@@ -332,7 +352,7 @@ class FinancialIntakeService:
             "byte_count": row.byte_count,
             "extraction": row.status,
             "reason": row.reason,
-            "reported_declarations": row.declarations,
+            "reported_declarations": self.declaration(row),
             "optional_inference": row.inference,
             "outcomes": outcomes,
             "next_cursor": str(offset + limit) if len(candidates) > offset + limit else None,

@@ -1,8 +1,8 @@
 # Docket specification
 
-Version: 1.5
-Adopted: November 23, 2026
-Implementation baseline: `452613e`
+Version: 1.6
+Adopted: November 25, 2026
+Implementation baseline: `ac40de0`
 
 ## 1. Status and change control
 
@@ -281,6 +281,13 @@ The [financial ingestion delta](deltas/2026-11-22T22-08-43Z-financial-ingestion-
 One native file submission and the separately authenticated collector share protected acquisition, digest verification, provenance and durable receipt semantics. Record source acceptance, extraction state, expense disposition and review independently. Optional inference produces evidence-anchored suggestions. A trusted writer may recognize a supported expense before funding is known. A collector may submit evidence under its revocable source registration. Qualifying expenses on the verified dedicated Purelymail billing route receive the operator's 100% declaration and write-off intent with exact policy revision. Manual declarations retain the supplied percentage including zero, or stay unknown. Payment, settlement and reviewed deductibility require independent evidence.
 
 Mail secrets are operator-enrolled locally and replaceable independently of source identity. The independent IMAP collector uses verified TLS, read-only selection and non-mutating UID fetches, checkpoints durable acceptance and retains recoverable failures. Activate only after verified enrollment, routing and retention. Prove native identity lifecycle, protected CSV import, real plugin file transfer and live synthetic-mail acceptance separately.
+
+For manual expense uploads, a positive operator-reported business-use percentage defaults
+to intent to claim that exact share. An explicit decision takes precedence. Omitted
+and zero percentages supply no default. Apply this standing rule on current reads
+of earlier uploads, including evidence awaiting extraction or funding. Identify the
+default's origin and preserve the original submission and captured annual reports.
+Year workpapers show the intended amount separately from any reviewed deduction.
 
 ### Financial reconciliation and annual review
 
@@ -574,6 +581,7 @@ disabled required operations do not complete two-way synchronization.
 | 013 | Retire NocoDB and fifteen hidden native aliases completely | Preserve data/provenance while removing running legacy/compatibility debt rather than adding fallback paths. |
 | 014 | Use Google-style current-subtree behavior for task-parent completion/deletion and native hierarchy moves | Operator-selected scope matches real API cascades without adding recursive inputs or recurring prompts. Adding a child does not change the parent's ETag; retain actual outcomes and protect unrelated records. |
 | 017 | Issue on final export and retain numbered invoice revisions | Reopening preserves the last collectible basis and cash history while the draft is edited. |
+| 018 | Derive claim intent from positive manual business use | One reported percentage states the intended share. Explicit exceptions, original evidence and reviewed tax amounts retain their own meaning. |
 | 016 | Reconcile distinct observations against one economic cost and one shared review queue | Source, funding, and tax decisions can proceed independently while annual reports retain their evidence. |
 | 015 | Separate agent-managed funding metadata, operator-managed credentials and unified source intake | Original evidence can be retained before extraction, funding attribution or tax review. |
 
@@ -581,6 +589,7 @@ disabled required operations do not complete two-way synchronization.
 
 | Version | Change |
 | --- | --- |
+| 1.6 | Adopts [the expense claim-intent default](deltas/2026-11-25T21-30-03Z-expense-claim-intent.md) for new and earlier receipt uploads. |
 | 1.5 | Adopts [idempotent invoice issuance and correction](deltas/2026-11-22T21-38-05Z-invoice-materialization-boundary.md). |
 | 1.4 | Adopts F3–F5 reconciliation, reviewed tax workpapers and annual reporting. |
 | 1.3 | Adopts F1/F2 financial intake and funding identities on the deployed 1.2 baseline. Live acceptance is tracked separately. |

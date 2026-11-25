@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, WithJsonSchema
 from pydantic.json_schema import SkipJsonSchema
 
 from docket.schemas.common import StrictModel
@@ -25,10 +25,15 @@ class SubmitEvidence(StrictModel):
         description="Retain pay or statement evidence without purchase extraction.",
     )
     file: HostFile
-    business_use_percent: Decimal | None = Field(
-        default=None, ge=0, le=100, max_digits=9, decimal_places=6
+    business_use_percent: Annotated[
+        Decimal | None, WithJsonSchema({"type": "number", "minimum": 0, "maximum": 100})
+    ] = Field(
+        default=None, ge=0, le=100, max_digits=9, decimal_places=6,
+        description="Reported business use from 0 to 100. A positive share is intended for claim.",
     )
-    write_off_intent: bool | None = None
+    write_off_intent: bool | SkipJsonSchema[None] = Field(
+        default=None, description="Optional explicit override, e.g. false for 'do not claim'."
+    )
     reported_instrument: InstrumentHint | None = None
 
 

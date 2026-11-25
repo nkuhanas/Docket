@@ -7,6 +7,31 @@ from test_work_reports import work_client
 linked_plugin = test_native_plugin.linked_plugin
 
 
+@pytest.mark.parametrize(
+    ("reported", "effective"),
+    [
+        ({"business_use_percent": "0"}, {}),
+        ({}, {}),
+        ({"business_use_percent": "85", "write_off_intent": False}, {}),
+        ({"write_off_intent": True}, {}),
+        ({"evidence_role": "income_document", "business_use_percent": "100"}, {}),
+        ({"evidence_role": "statement", "business_use_percent": "100"}, {}),
+        (
+            {"business_use_percent": "0.000001"},
+            {"write_off_intent": True, "write_off_intent_origin": "positive_business_use_v1"},
+        ),
+    ],
+)
+def test_read_claim_policy_on_retained_manual_declarations(reported, effective):
+    from docket.models import FinancialIntake
+    from docket.services.financial_intake import FinancialIntakeService
+
+    # The historical row contains only the operator's original inputs.
+    row = FinancialIntake(request_ref="fixture", declarations=dict(reported), policy_snapshot={})
+    assert FinancialIntakeService.declaration(row) == {**reported, **effective}
+    assert row.declarations == reported
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
 async def test_funding_lifecycle(linked_plugin):
@@ -90,7 +115,7 @@ async def test_attachment_tool_receipt_and_replay(linked_plugin, monkeypatch):
         args = {
             "context_id": context["context_id"],
             "operation_id": "synthetic-file",
-            "business_use_percent": "60",
+            "business_use_percent": 60,
             "reported_instrument": "Amex",
             "file": {
                 "file_id": "file-demo",
@@ -110,10 +135,14 @@ async def test_attachment_tool_receipt_and_replay(linked_plugin, monkeypatch):
         assert receipt["original_sha256"] == hashlib.sha256(blob).hexdigest()
         (outcome,) = receipt["outcomes"]
         assert outcome["disposition"] == "new_expense_recorded", receipt
-        assert (
-            outcome["funding"] == "unresolved"
-            and outcome["declarations"]["business_use_percent"] == "60"
-        )
+        assert outcome["funding"] == "unresolved" and outcome["tax_review"] == "unreviewed"
+        assert receipt["reported_declarations"] == outcome["declarations"] == {
+            "business_use_percent": "60",
+            "reported_instrument": "Amex",
+            "write_off_intent": True,
+            "write_off_intent_origin": "positive_business_use_v1",
+        }
+
         def unexpected_fetch(*args):
             pytest.fail("A retained receipt must be replayed without fetching the file again")
 
