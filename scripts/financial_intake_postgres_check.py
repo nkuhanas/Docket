@@ -1,5 +1,6 @@
 """Prove duplicate acceptance and funding revision protection on disposable PostgreSQL."""
 
+import asyncio
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -8,7 +9,13 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError
 
 from docket.agent_auth import AgentCallContext, agent_call_context
-from docket.models.financial_intake import FinancialCollector, FinancialIntake
+from docket.models import ExpenseRevision
+from docket.models.financial_intake import (
+    CandidateDecision,
+    FinancialCandidate,
+    FinancialCollector,
+    FinancialIntake,
+)
 from docket.models.funding import FundingRevision
 from docket.plugin.server import PluginMCP
 from docket.services.financial_intake import FinancialIntakeService
@@ -53,8 +60,10 @@ async def check_financial_intake(settings, factory, principal):
     else:
         raise AssertionError("Database allowed a funding history rewrite")
 
-    blob = (b"From: synthetic@example.test\r\nSubject: fixture\r\n\r\n"
-            b"Vendor: Fixture\r\nTotal: USD 1.00")
+    blob = (
+        b"From: synthetic@example.test\r\nSubject: fixture\r\n\r\n"
+        b"Vendor: Fixture\r\nTotal: USD 1.00"
+    )
     barrier = Barrier(2)
 
     def deliver(_):
@@ -78,4 +87,61 @@ async def check_financial_intake(settings, factory, principal):
     with factory.begin() as session:
         assert session.scalar(select(func.count()).select_from(FinancialIntake)) == 1
         assert attachment_store(session, settings).plaintext(left) == blob
-    return {"financial_original_concurrent_replay": "passed", "funding_revision_guard": "passed"}
+        FinancialIntakeService(session, settings).process(left)
+    token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        packet = (
+            await server.call_tool("docket_get_financial_context", {"intake_ref": left})
+        ).structured_content
+    finally:
+        agent_call_context.reset(token)
+    candidate = packet["outcomes"][0]["candidate_ref"]
+    barrier = Barrier(2)
+
+    def book(worker):
+        token = agent_call_context.set(AgentCallContext(principal))
+        try:
+            barrier.wait(timeout=15)
+            result = asyncio.run(
+                PluginMCP(settings).call_tool(
+                    "docket_record_expense",
+                    {
+                        "context_id": packet["context_id"],
+                        "operation_id": f"pg-inbox-race-{worker}",
+                        "candidate_ref": candidate,
+                        "amount": "1",
+                        "currency": "USD",
+                        "description": "Isolated concurrent receipt",
+                    },
+                )
+            )
+            return result.structured_content.get("disposition")
+        finally:
+            agent_call_context.reset(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(book, (1, 2))).count("committed") == 1
+    with factory() as session:
+        row = session.get(FinancialCandidate, candidate)
+        assert row.review_state == "booked" and row.expense_ref
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(ExpenseRevision)
+                .where(ExpenseRevision.receipt_ref == left)
+            )
+            == 1
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(CandidateDecision)
+                .where(CandidateDecision.candidate_ref == candidate)
+            )
+            == 1
+        )
+    return {
+        "financial_original_concurrent_replay": "passed",
+        "funding_revision_guard": "passed",
+        "candidate_atomic_concurrent_booking": "passed",
+    }

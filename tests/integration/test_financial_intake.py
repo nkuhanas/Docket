@@ -153,14 +153,21 @@ async def test_attachment_tool_receipt_and_replay(linked_plugin, monkeypatch, se
         assert receipt.get("source_accepted"), receipt
         assert receipt["original_sha256"] == hashlib.sha256(blob).hexdigest()
         (outcome,) = receipt["outcomes"]
-        assert outcome["disposition"] == "new_expense_recorded", receipt
+        assert outcome["disposition"] == "candidate_created", receipt
+        assert outcome["review_state"] == "needs_review"
+        with session_factory() as session:
+            assert session.scalar(select(Expense.ref_id)) is None
         assert outcome["funding"] == "unresolved" and outcome["tax_review"] == "unreviewed"
-        assert receipt["reported_declarations"] == outcome["declarations"] == {
-            "business_use_percent": "60",
-            "reported_instrument": "Amex",
-            "write_off_intent": True,
-            "write_off_intent_origin": "positive_business_use_v1",
-        }
+        assert (
+            receipt["reported_declarations"]
+            == outcome["declarations"]
+            == {
+                "business_use_percent": "60",
+                "reported_instrument": "Amex",
+                "write_off_intent": True,
+                "write_off_intent_origin": "positive_business_use_v1",
+            }
+        )
 
         def unexpected_fetch(*args):
             pytest.fail("A retained receipt must be replayed without fetching the file again")
@@ -267,16 +274,59 @@ async def test_receipt_through_both_channels_statement_match_and_revocation(
             ctx, "interactive", original, "message/rfc822", business_use_percent="0"
         )
         assert manual["outcomes"][0]["declarations"]["business_use_percent"] == "0"
-        expense = manual["outcomes"][0]["expense_ref"]
+        inbox = await call("docket_get_financial_context", {"inbox": "outstanding"})
+        assert {r["source_ref"] for r in inbox["items"]} == {source, manual["source_ref"]}
+
+        async def manual_context():
+            return await call("docket_get_financial_context", {"intake_ref": manual["source_ref"]})
+
+        ctx = await manual_context()
+        candidate_ref = manual["outcomes"][0]["candidate_ref"]
+        await command(
+            "docket_update_financial_candidate",
+            ctx,
+            "question",
+            target_ref=candidate_ref,
+            decision="ask",
+            note="What was the credit for?",
+        )
+        ctx = await manual_context()
+        assert ctx["outcomes"][0]["review_state"] == "awaiting_operator"
+        assert ctx["outcomes"][0]["recent_decisions"][0]["note"] == "What was the credit for?"
+        await command(
+            "docket_update_financial_candidate",
+            ctx,
+            "reply",
+            target_ref=candidate_ref,
+            decision="answer",
+            note="A coupon.",
+        )
+        ctx = await manual_context()
+        booking = dict(
+            candidate_ref=candidate_ref,
+            vendor="Test Merchant",
+            description="Purchase",
+            amount="12.50",
+            currency="USD",
+        )
+        recorded = await command("docket_record_expense", ctx, "reviewed-purchase", **booking)
+        expense = recorded["expenses"][0]["ref"]
+        assert (await command("docket_record_expense", ctx, "reviewed-purchase", **booking))[
+            "expenses"
+        ][0]["ref"] == expense
+        assert (await manual_context())["outcomes"][0]["review_state"] == "booked"
         ctx = await call("docket_get_financial_context", {"intake_ref": source})
         candidate = ctx["outcomes"][0]
         assert candidate["declarations"]["business_use_percent"] == "100"
         assert candidate.get("expense_ref") is None and candidate.get("activity_ref") is None
+        ctx = await call("docket_get_financial_context", {"intake_ref": source, "refs": [expense]})
         await command(
             "docket_update_financial_candidate",
             ctx,
             "adopt-known",
             target_ref=candidate["candidate_ref"],
+            existing_expense_ref=expense,
+            note="Both documents carry merchant invoice T1.",
         )
         merged = await call("docket_get_financial_context", {"intake_ref": source})
         assert merged["outcomes"][0]["expense_ref"] == expense
@@ -328,8 +378,9 @@ async def test_receipt_through_both_channels_statement_match_and_revocation(
         assert image["review_required"]
         cost = await command(
             "docket_record_expense",
-            await packet(),
+            await call("docket_get_financial_context", {"intake_ref": image["source_ref"]}),
             "cost-from-original",
+            candidate_ref=image["outcomes"][0]["candidate_ref"],
             vendor="Test Merchant",
             description="Supported cost",
             amount="10",
@@ -338,16 +389,6 @@ async def test_receipt_through_both_channels_statement_match_and_revocation(
             source_method="import",
         )
         cost_ref = cost["expenses"][0]["ref"]
-        ctx = await call(
-            "docket_get_financial_context", {"intake_ref": image["source_ref"], "refs": [cost_ref]}
-        )
-        await command(
-            "docket_update_financial_candidate",
-            ctx,
-            "link-retained-evidence",
-            target_ref=image["outcomes"][0]["candidate_ref"],
-            existing_expense_ref=cost_ref,
-        )
         linked = await call("docket_get_financial_context", {"intake_ref": image["source_ref"]})
         assert linked["extraction"] == "partial" and not linked["review_required"]
         assert linked["outcomes"][0]["expense_ref"] == cost_ref
@@ -546,3 +587,128 @@ def test_tabular_invoice_leaves_ambiguous_or_non_purchase_evidence_for_review():
     ):
         before = purchase(layout, "file/page/1")
         assert tabular_invoice(layout, before) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_mail_parts_visual_and_reopen(linked_plugin, session_factory, monkeypatch):
+    import base64
+    import hashlib
+    from email.message import EmailMessage
+    from io import BytesIO
+
+    import httpx2
+    from mcp import Client
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.types import ImageContent
+    from PIL import Image, ImageDraw
+
+    from docket.models import FinancialCollector, PluginNotification
+    from docket.services import financial_intake
+    from docket.services.financial_intake import FinancialIntakeService
+
+    app, settings, token, _principal = linked_plugin
+    # The second page's blue marker exists only in the raster layer.
+    first = Image.new("RGB", (400, 600), "white")
+    second = first.copy()
+    ImageDraw.Draw(second).rectangle((100, 180, 310, 440), fill="blue")
+    pdf = BytesIO()
+    first.save(pdf, format="PDF", save_all=True, append_images=[second])
+    message = EmailMessage()
+    message["Subject"] = "Documents"
+    message.set_content("See attached.")
+    message.add_attachment(pdf.getvalue(), maintype="application", subtype="pdf", filename="a.pdf")
+    message.add_attachment(b"account period\n", maintype="text", subtype="plain", filename="b.txt")
+    raw = message.as_bytes()
+
+    monkeypatch.setattr(
+        financial_intake,
+        "classify",
+        lambda doc, *_: {
+            "a.pdf": "other",
+            "b.txt": "statement",
+            "": "uncertain",
+        }[doc.name],
+    )
+    with session_factory.begin() as db:
+        grant = FinancialCollector(
+            identity="visual-test",
+            operator_ref=settings.canonical_operator_ref,
+            enabled=True,
+            revision=1,
+            credential_digest="a" * 64,
+            policy={"declaration": {"business_use_percent": "100"}},
+        )
+        db.add(grant)
+        db.flush()
+        service = FinancialIntakeService(db, settings)
+        src = service.admit(
+            raw,
+            delivery="visual",
+            input_hash=hashlib.sha256(raw).hexdigest(),
+            declared="message/rfc822",
+            filename=None,
+            declarations={},
+            collector=grant,
+        ).source_ref
+        service.process(src)
+        for _ in range(4):
+            service.suggest_pending()
+        assert (
+            len(
+                db.scalars(
+                    select(PluginNotification).where(
+                        PluginNotification.event_name == "docket.finance.attention",
+                        PluginNotification.subject_ref == src,
+                    )
+                ).all()
+            )
+            == 1
+        )
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app), headers={"Authorization": "Bearer " + token}
+        ) as http,
+        Client(
+            streamable_http_client("https://docket.you/mcp/", http_client=http), mode="2026-07-28"
+        ) as client,
+    ):
+
+        async def packet():
+            return (
+                await client.call_tool("docket_get_financial_context", {"intake_ref": src})
+            ).structured_content
+
+        ctx = await packet()
+        parts = {r["facts"]["anchor"]: r for r in ctx["outcomes"]}
+        candidate = parts["mime/2"]
+        assert candidate["review_state"] == parts["mime/3"]["review_state"] == "dismissed"
+        changed = await client.call_tool(
+            "docket_update_financial_candidate",
+            {
+                "context_id": ctx["context_id"],
+                "operation_id": "reopen-visual",
+                "target_ref": candidate["candidate_ref"],
+                "decision": "reopen",
+                "note": "The retained PDF is a receipt.",
+            },
+        )
+        assert changed.structured_content["disposition"] == "committed"
+        assert (await packet())["outcomes"][1]["review_state"] == "needs_review"
+        args = {"source_ref": src, "part": "mime/2", "page": 2}
+        page = await client.call_tool("docket_read_financial_page", args)
+        assert page.structured_content.get("pages") == 2, page.structured_content
+        (image,) = [c for c in page.content if isinstance(c, ImageContent)]
+        with Image.open(BytesIO(base64.b64decode(image.data))) as picture:
+            r, g, b = picture.getpixel((picture.width // 2, picture.height // 2))
+            assert b > 200 and max(r, g) < 50
+        invalid = await client.call_tool("docket_read_financial_page", {**args, "page": 3})
+        assert invalid.structured_content["error"]["code"] == "financial_page_limit"
+        from docket.models import FinancialIntake
+
+        with session_factory.begin() as db:
+            db.get(FinancialIntake, src).operator_ref = "different-owner"
+        denied = await client.call_tool("docket_read_financial_page", args)
+        assert denied.structured_content["error"]["code"] == "financial_source_unavailable"
+        assert not any(isinstance(c, ImageContent) for c in denied.content)

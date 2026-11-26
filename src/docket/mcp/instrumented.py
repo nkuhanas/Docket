@@ -7,7 +7,7 @@ from typing import Any, Literal, cast
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import CallToolResult, ContentBlock, TextContent, Tool
+from mcp.types import CallToolResult, ContentBlock, ImageContent, TextContent, Tool
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -511,10 +511,13 @@ class ProvenanceMCP(MCPServer[Any]):
     ) -> CallToolResult:
         result = await self.invoke_tool(name, arguments, context)
         envelope = _result_envelope(result)
+        content: list[ContentBlock] = [TextContent(type="text", text=json.dumps(
+            envelope, ensure_ascii=False, separators=(",", ":"),
+        ))]
+        if name == "docket_read_financial_page" and isinstance(result, tuple):
+            content.extend(block for block in result[0] if isinstance(block, ImageContent))
         return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(
-                envelope, ensure_ascii=False, separators=(",", ":"),
-            ))],
+            content=content,
             structured_content=envelope,
             is_error=envelope is not None and envelope.get("ok") is False,
         )
@@ -924,4 +927,8 @@ class ProvenanceMCP(MCPServer[Any]):
                     execution_completion_token,
                     metadata={"disposition": result_disposition or status},
                 )
+        if name == "docket_read_financial_page" and status == "succeeded":
+            # Audit and compact the small metadata envelope only. The agent receives the
+            # protected image directly on the response to its authenticated read.
+            return cast(Sequence[ContentBlock], (wire_result.content, envelope))
         return result

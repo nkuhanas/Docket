@@ -2420,7 +2420,7 @@ async def check():
     from docket.models import TaskReminderAuthority
 
     with engine.connect() as connection:
-        assert MigrationContext.configure(connection).get_current_revision() == "20261123b2c3"
+        assert MigrationContext.configure(connection).get_current_revision() == "20261126a1b2"
     with factory() as session:
         assert session.scalar(select(TaskReminderAuthority.generation_ref).limit(1))
         assert session.scalar(select(WorkSession.id).limit(1))

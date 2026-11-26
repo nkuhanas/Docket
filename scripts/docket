@@ -94,6 +94,7 @@ compose_smoke() (
     export POSTGRES_PASSWORD=docket-smoke
     export DOCKET_DISCORD_PROJECTION_ENABLED=false
     local project=${DOCKET_SMOKE_PROJECT:-docket-native-smoke-${UID:-local}}
+    export DOCKET_INFERENCE_NETWORK="$project-inference" DOCKET_INFERENCE_EXTERNAL=false
     smoke_compose() {
         compose --project-name "$project" --env-file "$ROOT/.env.example" "$@"
     }

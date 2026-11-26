@@ -104,6 +104,9 @@ class ReverseFinancialRecord(FinancialReversalFields, CommandBase):
 
 
 class GetFinancialContext(StrictModel):
+    inbox: Literal["outstanding", "history"] | None = Field(
+        default=None, description="Expense candidates needing review or all review states."
+    )
     intake_ref: str | None = Field(default=None, pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")
     refs: list[FinancialRef | FundingLinkRef] = Field(default_factory=list, max_length=25)
     engagement_ref: EngagementRef | None = None
@@ -143,7 +146,7 @@ SETTLEMENT_TOOL_PURPOSES = {
         "and does not edit issued documents."
     ),
     "docket_get_financial_context": (
-        "Read received, applied, credited, deducted, unapplied and outstanding money "
+        "Read the Expenses inbox or one retained intake. Read received and outstanding money "
         "without counting shared invoice/timesheet sources twice. Includes due/overdue "
         "and reconciliation coverage; JSON/CSV continuation retains one basis. Gross "
         "claims are separate from receipt of money."

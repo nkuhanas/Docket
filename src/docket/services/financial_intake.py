@@ -16,14 +16,21 @@ from docket.models import AttachmentEvidence, AuthenticatedRequest, Source
 from docket.models.base import utc_now
 from docket.models.financial_intake import FinancialCandidate, FinancialCollector, FinancialIntake
 from docket.models.funding import AccountActivity
-from docket.schemas.authority import ExpenseCreate
-from docket.schemas.expenses import ExpenseSpec
 from docket.schemas.financial_intake import ResolveEvidence
 from docket.services.attachment_evidence import AttachmentCapture
+from docket.services.expense_inbox import (
+    decisions,
+    known_purchase,
+    locked_candidate,
+    review_decision,
+    transition,
+    wake,
+)
 from docket.services.expenses import ExpenseService
 from docket.services.financial_files import extract, media_type, purchase_key, rejected
-from docket.services.financial_inference import suggest
+from docket.services.financial_inference import classify
 from docket.services.funding import FundingService, attachment_store
+from docket.services.receipt_documents import document_facts, documents, mail_subject
 
 BUSINESS_USE_DEFAULT = "positive_business_use_v1"
 
@@ -35,7 +42,8 @@ def expense_declaration_values(
         Decimal(str(d["business_use_percent"])) for d in declarations if "business_use_percent" in d
     }
     explicit = {
-        d["write_off_intent"] for d in declarations
+        d["write_off_intent"]
+        for d in declarations
         if "write_off_intent" in d and d.get("write_off_intent_origin") != BUSINESS_USE_DEFAULT
     }
     intents = explicit or {d["write_off_intent"] for d in declarations if "write_off_intent" in d}
@@ -170,11 +178,10 @@ class FinancialIntakeService:
         # Storage faults roll back for retry. Extraction failures preserve the source.
         raw = attachment_store(self.session, self.settings).plaintext(row.source_ref)
         try:
-            extracted = extract(
-                raw,
-                row.media_type,
-                income=row.declarations.get("evidence_role") == "income_document",
-            )
+            if row.declarations.get("evidence_role") == "income_document":
+                extracted = extract(raw, row.media_type, income=True)
+            else:
+                extracted = [f for d in documents(raw, row.media_type) for f in document_facts(d)]
         except Exception:
             row.status, row.reason = "failed", "unreadable_original"
             extracted = []
@@ -215,40 +222,63 @@ class FinancialIntakeService:
                 )
             )
         self.session.flush()
+        if not row.collector_ref and row.media_type != "text/csv":
+            for candidate in self.candidates(row.source_ref):
+                wake(self.session, self.settings, candidate)
         return row
 
     def suggest_pending(self) -> None:
-        if not (
-            self.settings.financial_classifier_model or self.settings.financial_extraction_model
-        ):
-            return
-        row = self.session.scalar(
-            select(FinancialIntake)
+        pair = self.session.execute(
+            select(FinancialCandidate, FinancialIntake)
+            .join(FinancialIntake)
             .where(
-                FinancialIntake.status == "partial",
-                FinancialIntake.declarations["evidence_role"].as_string().is_(None),
-                FinancialIntake.inference_attempts < 3,
-                (
-                    FinancialIntake.next_attempt.is_(None)
-                    | (FinancialIntake.next_attempt <= utc_now())
-                ),
+                FinancialIntake.collector_ref.is_not(None),
+                FinancialCandidate.review_state == "needs_review",
+                FinancialCandidate.expense_ref.is_(None),
+                FinancialCandidate.changeset_ref.is_(None),
+                FinancialCandidate.route_attempts < 3,
+                FinancialCandidate.retry_at.is_(None) | (FinancialCandidate.retry_at <= utc_now()),
             )
-            .order_by(FinancialIntake.created_at)
+            .order_by(FinancialIntake.created_at, FinancialCandidate.ordinal)
             .limit(1)
-            .with_for_update(skip_locked=True)
-        )
-        if row is None:
+            .with_for_update(of=FinancialCandidate, skip_locked=True)
+        ).first()
+        if pair is None:
             return
+        candidate, row = pair
         raw = attachment_store(self.session, self.settings).plaintext(row.source_ref)
-        row.inference_attempts += 1
         try:
-            row.inference = suggest(raw, row.media_type, self.settings)
+            anchor = candidate.facts.get("anchor", "file").split("/page/")[0]
+            doc = next((d for d in documents(raw, row.media_type) if d.anchor == anchor), None)
+            kind = (
+                classify(doc, candidate.facts, mail_subject(raw), self.settings)
+                if doc
+                else "uncertain"
+            )
         except Exception:
-            row.inference = {"status": "inference_unavailable", "attempts": row.inference_attempts}
-            row.next_attempt = utc_now() + timedelta(minutes=2**row.inference_attempts)
-        else:
-            row.next_attempt = None
-            row.inference_attempts = 3
+            kind = "unavailable"
+        candidate.route_attempts = candidate.route_attempts + 1 if kind == "unavailable" else 3
+        candidate.retry_at = (
+            utc_now() + timedelta(minutes=2**candidate.route_attempts)
+            if kind == "unavailable" and candidate.route_attempts < 3
+            else None
+        )
+        previous = candidate.facts.get("classification")
+        if previous == kind:
+            return
+        candidate.facts = {**candidate.facts, "classification": kind}
+        state = "dismissed" if kind in ("other", "statement") else "needs_review"
+        transition(
+            self.session,
+            candidate,
+            state,
+            "route",
+            kind,
+            None,
+            "classifier:" + self.settings.financial_classifier_model,
+        )
+        if state == "needs_review" and previous != "unavailable":
+            wake(self.session, self.settings, candidate)
 
     def owned(self, ref: str) -> FinancialIntake:
         row = self.session.get(FinancialIntake, ref)
@@ -269,7 +299,12 @@ class FinancialIntakeService:
     def declaration(
         row: FinancialIntake, candidate: FinancialCandidate | None = None
     ) -> dict[str, Any]:
-        if row.collector_ref and candidate and candidate.disposition != "evidence_only":
+        if (
+            row.collector_ref
+            and candidate
+            and candidate.disposition != "evidence_only"
+            and candidate.review_state != "dismissed"
+        ):
             return {
                 **row.policy_snapshot["declaration"],
                 "origin": "standing_policy",
@@ -331,6 +366,8 @@ class FinancialIntakeService:
                 {
                     "candidate_ref": c.ref_id,
                     "version": c.version,
+                    "review_state": c.review_state,
+                    "recent_decisions": decisions(self.session, c),
                     "facts": c.facts,
                     "disposition": c.disposition,
                     "expense_ref": c.expense_ref,
@@ -346,7 +383,9 @@ class FinancialIntakeService:
             )
         unresolved_reason = bool(row.reason)
         if row.reason == "financial_facts_unresolved" and candidates:
-            unresolved_reason = any(not c.expense_ref for c in candidates)
+            unresolved_reason = any(
+                c.review_state in ("needs_review", "awaiting_operator") for c in candidates
+            )
         return {
             "ok": True,
             "source_ref": row.source_ref,
@@ -368,26 +407,19 @@ class FinancialIntakeService:
         }
 
     def resolve(self, session: Session, changeset: Any, change: Any) -> list[str]:
-        from docket.services.financial_review import current_facts, legacy_matches, lock_review
+        from docket.services.financial_review import current_facts, legacy_matches
 
         owner = require_principal("commit").operator_ref
-        lock_review(session, owner)
-        candidate = session.scalar(
-            select(FinancialCandidate)
-            .where(FinancialCandidate.ref_id == change.object_ref)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-        if candidate is None:
-            raise rejected("candidate_unavailable")
-        src = self.owned(candidate.source_ref)
-        if src.declarations.get("evidence_role") == "income_document":
-            raise rejected("use_income_evidence_command")
-        if changeset.expected_versions.get(candidate.ref_id) != candidate.version:
-            raise rejected("candidate_version_conflict")
+        candidate = locked_candidate(session, change.object_ref, changeset.expected_versions)
         choice = ResolveEvidence.model_validate(change.payload)
+        if choice.decision:
+            review_decision(
+                session, self.settings, candidate, choice.decision, choice.note, changeset.ref_id
+            )
+            return [candidate.ref_id]
+        if not candidate.expense_ref and candidate.review_state != "needs_review":
+            raise rejected("candidate_transition_conflict")
         expenses = ExpenseService(session)
-        facts = candidate.facts
         effect = candidate.disposition
         ref = candidate.expense_ref
         if candidate.activity_ref and choice.instrument_ref:
@@ -399,71 +431,25 @@ class FinancialIntakeService:
                 raise rejected("activity_instrument_conflict")
         if ref and choice.existing_expense_ref and choice.existing_expense_ref != ref:
             raise rejected("expense_link_conflict")
-        key = candidate.purchase_key
-        if key:
-            if session.get_bind().dialect.name == "postgresql":
-                session.execute(
-                    text("SELECT pg_advisory_xact_lock(:key)"), {"key": int(key[:15], 16)}
-                )
-            known = session.scalar(
-                select(FinancialCandidate.expense_ref)
-                .join(FinancialIntake)
-                .where(
-                    FinancialIntake.operator_ref == src.operator_ref,
-                    FinancialCandidate.purchase_key == key,
-                    FinancialCandidate.expense_ref.is_not(None),
-                )
-                .limit(1)
-            )
-            if known and choice.existing_expense_ref and choice.existing_expense_ref != known:
-                raise rejected("expense_identity_conflict")
-        else:
-            known = None
-        linked = choice.existing_expense_ref or known
-        if not ref and linked:
-            expense = expenses.revision(expenses.head(linked, lock=True))
-            if facts.get("currency", expense.currency) != expense.currency or (
-                "amount" in facts
-                and str(expense.amount) != facts["amount"]
-                and Decimal(str(expense.amount)) != Decimal(facts["amount"])
-            ):
-                raise rejected("expense_amount_conflict")
-            ref, effect = linked, "existing_expense_linked"
         if not ref:
-            if facts.get("review_only"):
-                raise rejected("expense_requires_independent_evidence")
-            if not all(facts.get(k) for k in ("amount", "currency", "vendor")):
-                raise rejected("insufficient_expense_evidence")
-            spec = ExpenseSpec.model_validate(
-                {
-                    "amount": facts["amount"],
-                    "currency": facts["currency"],
-                    "description": facts["vendor"] + " purchase",
-                    "vendor": facts["vendor"],
-                    "incurred_on": facts.get("incurred_on"),
-                    "source_method": "import",
-                    "receipt_ref": src.source_ref,
-                    "external_source": "financial_intake",
-                    "external_id": key or candidate.ref_id,
-                }
-            )
-            mutation = ExpenseCreate(
-                change_id="expense",
-                action="create",
-                object_type="expense",
-                affected_fields=["amount", "receipt_ref"],
-                create_spec=spec,
-                basis_refs=change.basis_refs,
-            )
-            ref = expenses.apply(session, changeset, mutation)[0]
-            effect = "new_expense_recorded"
+            if not choice.existing_expense_ref:
+                raise rejected("explicit_booking_or_link_required")
+            known = known_purchase(session, candidate)
+            if known and known != choice.existing_expense_ref:
+                raise rejected("expense_identity_conflict")
+            expense = expenses.head(choice.existing_expense_ref, lock=True)
+            if changeset.expected_versions.get(expense.ref_id) != expense.version:
+                raise rejected("expense_version_conflict")
+            ref, effect = expense.ref_id, "existing_expense_linked"
+        elif not (choice.activity_ref or choice.instrument_ref or choice.existing_expense_ref):
+            raise rejected("candidate_decision_required")
         pinned_instrument = None
         if choice.activity_ref:
             activity = session.scalar(
                 select(AccountActivity)
                 .where(
                     AccountActivity.ref_id == choice.activity_ref,
-                    AccountActivity.operator_ref == src.operator_ref,
+                    AccountActivity.operator_ref == owner,
                 )
                 .with_for_update()
             )
@@ -514,9 +500,15 @@ class FinancialIntakeService:
             ).ref_id
         if candidate.expense_revision_ref is None:
             candidate.expense_revision_ref = expenses.revision(expenses.head(ref)).ref_id
-        candidate.version += 1
         candidate.disposition, candidate.expense_ref = effect, ref
-        candidate.review_reason = None
-        candidate.changeset_ref = changeset.ref_id
-        session.flush()
+        state = "booked" if effect == "new_expense_recorded" else "linked"
+        transition(
+            session,
+            candidate,
+            state,
+            "link" if choice.existing_expense_ref else "funding",
+            choice.note,
+            changeset.ref_id,
+            require_principal("commit").principal_ref,
+        )
         return [candidate.ref_id, ref]

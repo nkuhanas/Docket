@@ -1,6 +1,6 @@
 # Expenses inbox and agent review
 
-Proposed on SPEC 1.7 at `89b03a2`. Nimble sorts incoming billing mail. Docket retains originals and outstanding items. The operator’s chosen agent inspects the evidence, asks about material ambiguities and records or links the expense. The same agent can finish a directly supplied receipt in the conversation where the operator gave it.
+Adopted into SPEC 1.8 on the SPEC 1.7 baseline at `89b03a2`. Nimble sorts incoming billing mail. Docket retains originals and outstanding items. The operator’s chosen agent inspects the evidence, asks about material ambiguities and records or links the expense. The same agent can finish a directly supplied receipt in the conversation where the operator gave it.
 
 ## What changes
 
@@ -37,6 +37,12 @@ Durable receipt and routing are source-level milestones. After routing, track re
 | Dismissed or set aside | Retain the reason, actor or classifier, and original evidence. Authorized reclassification or reopening returns the item to review. |
 
 Use existing operation IDs, actor attribution and candidate versions for decisions. Replaying a successful action returns its recorded result. A stale decision cannot overwrite an answer or book a second expense. Corrections to a booked expense use the existing revision history.
+
+## Native decisions and evidence identity
+
+Use the candidate reference and its version in the owner-bound intake context. The candidate binds a specific purchase and retained MIME part within the email. On `docket_update_financial_candidate`, asking stores the question and moves to `awaiting_operator`; answering records the answer and returns to `needs_review`. Dismissal and reopening are attributable decisions. Reopening returns the item to actionable review. Booking through `docket_record_expense(candidate_ref=…)` resolves to `booked`; an explicit existing-expense link resolves to `linked`. Preserve the decision and current state independently so reopened work is discoverable. Require an attributable basis for a cross-source link.
+
+Two candidates can point to one expense. Keep both originals, document anchors and source-specific declarations, exposing disagreements. Similar vendor, date and amount can suggest a match but cannot establish identity. Report a previously booked strong identity to the reviewer for explicit linking. Preserve historical bookings and replay of completed commands.
 
 ## Acceptance before activation
 

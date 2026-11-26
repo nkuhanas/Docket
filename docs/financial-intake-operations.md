@@ -4,7 +4,7 @@
 
 From the native connection, read `docket_get_funding_context`. Use the create/update funding-account and payment-instrument commands with the returned context and a stable operation ID. Register an authorized-user instrument with its own cardholder, liability and account references. Two instruments can share a masked suffix. For a replacement, create the successor with `replaces_ref`, then record the predecessor's retirement. Previous activity keeps the revisions observed at posting.
 
-Submit an original PDF, JPEG, PNG, EML or CSV using `docket_submit_financial_evidence`. Use the host-supplied file parameter. Reuse the same operation ID after a lost response. Read the receipt through `docket_get_financial_context(intake_ref=…)`. The response reports original-byte acceptance, digest, extraction progress, per-purchase disposition, declarations and funding/review gaps. The native connection may record one unambiguous purchase. Mail and optional local inference produce candidates. Use `docket_update_financial_candidate` to adopt a candidate or link it to a known expense, instrument or exact posted activity. Pass intended link targets in the intake context's `refs` list. An image without readable facts remains available for review.
+Submit an original PDF, JPEG, PNG, EML or CSV using `docket_submit_financial_evidence`. Use the host-supplied file parameter. Reuse the same operation ID after a lost response. Read the receipt through `docket_get_financial_context(intake_ref=…)`. The response reports original-byte acceptance, digest, extraction progress, per-purchase disposition, declarations and funding/review gaps. Submission retains the original. Read the outstanding queue with `docket_get_financial_context(inbox="outstanding")` and inspect the chosen intake. Use the candidate reference with `docket_record_expense` to book reviewed facts atomically. To link another source, use `docket_update_financial_candidate` with the existing expense and a note identifying the common purchase. The same command accepts an instrument or exact posted activity. Pass intended link targets in the intake context's `refs` list. An image without readable facts remains available for review.
 
 Use `docket_create_account_activity` for manual observations. For a statement, supply the retained CSV source and account together in a funding context. Preview `docket_create_statement_import` before accepting the mapping. CSV uses ISO `posted_on`, `description`, signed `amount` (negative for outflows), and `currency`. Optional columns are `external_id`, `kind`, `state` and `corrects_ref`. Use stable account-scoped bank IDs where available. Inspect the resulting statement and activity refs. A card repayment can be recorded as a transfer. The original economic cost retains its own identity.
 
@@ -21,8 +21,8 @@ Docket detects PDFs from their original bytes. A filename extension is optional.
 For a single-page invoice with a seller beside the billing column, extraction
 checks the issue date, explicit currency and agreement between total and amount
 due. When a retained PDF still has incomplete purchase fields, the authorized
-agent can read its text with `docket_read_attachment_text`, check existing costs
-and link the supported expense using the original source. After linking, the
+agent can inspect the original with `docket_read_financial_page`, check existing costs
+and explicitly book the candidate or link it to an existing expense. After linking, the
 receipt continues to show the extractor's historical result and the current
 expense disposition separately.
 
@@ -70,9 +70,15 @@ scripts/financial-collector revoke
 
 A verified mailbox declaration applies to qualifying expenses. An address in an uploaded message confers no mailbox policy. An explicit manual 0% is retained. Missing funding, conflicting declarations and unreviewed tax treatment remain visible. A receipt cannot establish that a charge posted.
 
-## Optional local suggestions
+## Local mail routing and agent review
 
-The default extractor uses deterministic receipt labels and retained MIME/PDF parts. For admitted plain billing text, an administrator may enable a local classifier or extractor with `DOCKET_FINANCIAL_CLASSIFIER_MODEL`, `DOCKET_FINANCIAL_EXTRACTION_MODEL` and `DOCKET_FINANCIAL_OLLAMA_URL`. Configure the actual local model identifiers and a permitted local runtime address. The worker retains evidence-anchored proposals and bounded retry state. It has no authority to create instruments, declare business use or adopt purchases. No local model setup is required to accept originals.
+Configure the local Nimble System One endpoint with `DOCKET_FINANCIAL_OLLAMA_URL` and
+`DOCKET_FINANCIAL_CLASSIFIER_MODEL`. Production uses the inference Docker network
+and `nimble:9b-q8_0`. Classifier failures leave evidence reviewable. Ask, answer,
+dismiss and reopen through the candidate command using the observed intake context.
+Use `inbox="history"` to find set-aside mail. Use `docket_read_financial_page`
+with the retained source, part and page for visual review. Poll the outstanding inbox
+after a missed finance event. Connector receipt alone never resolves a purchase.
 
 ## Annual reconciliation
 

@@ -71,7 +71,11 @@ class ExpenseReportingFields(StrictModel):
         return self
 
 
+CandidateRef = Annotated[str, Field(pattern=r"^fcand_[0-9A-HJKMNP-TV-Z]{26}$")]
+
+
 class RecordExpense(ExpenseFields, ExpenseReportingFields, CommandBase):
+    candidate_ref: CandidateRef | SkipJsonSchema[None] = None
     manual_entry_requested: bool = Field(
         default=False,
         description="True only for a standalone cost the operator directly reports without a file. "
@@ -130,6 +134,10 @@ class ExpenseSpec(ExpenseFields):
         return self
 
 
+class ReviewedExpenseSpec(ExpenseSpec):
+    candidate_ref: CandidateRef | None = None
+
+
 class QueryExpenses(StrictModel):
     date_from: date | None = None
     date_to: date | None = Field(
@@ -150,7 +158,7 @@ class QueryExpenses(StrictModel):
 
 EXPENSE_TOOL_PURPOSES = {
     "docket_record_expense": "Record a directly reported cost. A receiptless entry requires "
-    "manual_entry_requested. For a supplied file use docket_submit_financial_evidence. "
+    "manual_entry_requested. For a retained purchase pass candidate_ref from intake context. "
     "Stop if the original cannot be passed. Stable external IDs deduplicate.",
     "docket_update_expense": "Correct costs or record reported submission/approval/rejection. "
     "Earlier cost/approval snapshots remain immutable. An approval is not money received; "

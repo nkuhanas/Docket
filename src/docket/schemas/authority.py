@@ -21,7 +21,7 @@ from docket.schemas.events import (
     MaterializedEventPatchSpec,
 )
 from docket.schemas.evidence import FieldEvidenceInput
-from docket.schemas.expenses import ExpenseRef, ExpenseSpec
+from docket.schemas.expenses import ExpenseRef, ExpenseSpec, ReviewedExpenseSpec
 from docket.schemas.financial_documents import DocumentRef, TimesheetSpec, TimesheetStatusSpec
 from docket.schemas.financial_intake import CandidateRef, ResolveEvidence
 from docket.schemas.financial_review import (
@@ -739,7 +739,7 @@ class ExpenseCreate(MutationBase):
     action: Literal["create"]
     object_type: Literal["expense"]
     object_ref: None = None
-    create_spec: ExpenseSpec
+    create_spec: ReviewedExpenseSpec
     payload: None = None
 
 

@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/usr/lib/postgresql/16/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends --yes age libpq5 \
+    && apt-get install --no-install-recommends --yes age libpq5 poppler-utils util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=postgres-client /usr/lib/postgresql/16 /usr/lib/postgresql/16
