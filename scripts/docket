@@ -27,6 +27,7 @@ init_docker() {
             sudo -n
             --preserve-env=DOCKET_SERVICE_ENV_FILE,DOCKET_BUILD_REVISION,DOCKET_PORT,DOCKET_IMAGE
             --preserve-env=DOCKET_DISCORD_PROJECTION_ENABLED,DOCKET_CREDENTIALS_DIR
+            --preserve-env=DOCKET_INFERENCE_NETWORK,DOCKET_INFERENCE_EXTERNAL
             docker
         )
     else

@@ -382,7 +382,7 @@ class FinancialIntakeService:
                 }
             )
         unresolved_reason = bool(row.reason)
-        if row.reason == "financial_facts_unresolved" and candidates:
+        if row.reason in ("financial_facts_unresolved", "unreadable_original") and candidates:
             unresolved_reason = any(
                 c.review_state in ("needs_review", "awaiting_operator") for c in candidates
             )
