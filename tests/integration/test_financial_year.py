@@ -50,11 +50,11 @@ async def test_financial_year_end_to_end(session_factory, linked_plugin, monkeyp
                 )
             return fact
 
-        async def upload(key, text, **declarations):
+        async def upload(key, text, *, matching=None, **declarations):
             from docket.plugin import financial_intake
 
             monkeypatch.setattr(financial_intake, "download_file", lambda *_: text.encode())
-            return await call(
+            result = await call(
                 "docket_submit_financial_evidence",
                 dict(
                     context_id=(await context())["context_id"],
@@ -67,6 +67,38 @@ async def test_financial_year_end_to_end(session_factory, linked_plugin, monkeyp
                     **declarations,
                 ),
             )
+
+            if declarations.get("evidence_role"):
+                return result
+            read = {"intake_ref": result["source_ref"], "refs": [matching] if matching else []}
+            ctx = await call("docket_get_financial_context", read)
+            candidate = ctx["outcomes"][0]["candidate_ref"]
+            args = dict(context_id=ctx["context_id"], operation_id=key + "-review")
+            if matching:
+                booked = await call(
+                    "docket_update_financial_candidate",
+                    {
+                        **args,
+                        "target_ref": candidate,
+                        "existing_expense_ref": matching,
+                        "note": "Same invoice number in the attached originals.",
+                    },
+                )
+            else:
+                booked = await call(
+                    "docket_record_expense",
+                    {
+                        **args,
+                        "candidate_ref": candidate,
+                        "amount": "120",
+                        "currency": "USD",
+                        "vendor": "Example Fixture",
+                        "description": "Fixture purchase",
+                        "incurred_on": "2026-01-03",
+                    },
+                )
+            assert booked.get("disposition") == "committed", booked
+            return await call("docket_get_financial_context", read)
 
         async def posting(label, value, kind, acct, day="2026-01-03"):
             await command(
@@ -318,15 +350,22 @@ async def test_financial_year_end_to_end(session_factory, linked_plugin, monkeyp
         captured = await context(section="expenses")
         row = next(r for r in captured["rows"] if r["expense_ref"] == ref)
         assert Decimal(row["declared_amount"]) == 72 and row["intended_claim_amount"] == "0"
-        duplicate = await upload("also-reported", opt_out_mail, business_use_percent=60)
+        duplicate = await upload(
+            "also-reported", opt_out_mail, matching=ref, business_use_percent=60
+        )
         assert duplicate["outcomes"][0]["expense_ref"] == ref
         assert not duplicate["outcomes"][0]["conflicting_declarations"]
         overridden = await context(section="expenses")
-        assert next(r for r in overridden["rows"] if r["expense_ref"] == ref)[
-            "intended_claim_amount"
-        ] == "0"
+        assert (
+            next(r for r in overridden["rows"] if r["expense_ref"] == ref)["intended_claim_amount"]
+            == "0"
+        )
         conflict = await upload(
-            "explicit-claim", opt_out_mail, business_use_percent=60, write_off_intent=True
+            "explicit-claim",
+            opt_out_mail,
+            matching=ref,
+            business_use_percent=60,
+            write_off_intent=True,
         )
         assert conflict["outcomes"][0]["conflicting_declarations"]
         live = await context(section="expenses")

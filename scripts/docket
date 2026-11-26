@@ -27,6 +27,7 @@ init_docker() {
             sudo -n
             --preserve-env=DOCKET_SERVICE_ENV_FILE,DOCKET_BUILD_REVISION,DOCKET_PORT,DOCKET_IMAGE
             --preserve-env=DOCKET_DISCORD_PROJECTION_ENABLED,DOCKET_CREDENTIALS_DIR
+            --preserve-env=DOCKET_INFERENCE_NETWORK,DOCKET_INFERENCE_EXTERNAL
             docker
         )
     else
@@ -94,6 +95,7 @@ compose_smoke() (
     export POSTGRES_PASSWORD=docket-smoke
     export DOCKET_DISCORD_PROJECTION_ENABLED=false
     local project=${DOCKET_SMOKE_PROJECT:-docket-native-smoke-${UID:-local}}
+    export DOCKET_INFERENCE_NETWORK="$project-inference" DOCKET_INFERENCE_EXTERNAL=false
     smoke_compose() {
         compose --project-name "$project" --env-file "$ROOT/.env.example" "$@"
     }

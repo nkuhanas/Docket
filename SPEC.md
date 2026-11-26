@@ -1,8 +1,8 @@
 # Docket specification
 
-Version: 1.7
-Adopted: November 25, 2026
-Implementation baseline: `6a4d7c9`
+Version: 1.8
+Adopted: November 26, 2026
+Implementation baseline: `89b03a2`
 
 ## 1. Status and change control
 
@@ -293,6 +293,10 @@ and zero percentages supply no default. Apply this standing rule on current read
 of earlier uploads, including evidence awaiting extraction or funding. Identify the
 default's origin and preserve the original submission and captured annual reports.
 Year workpapers show the intended amount separately from any reviewed deduction.
+
+Receipt intake and replay retain originals and candidates. Booking requires a separate authorized expense command. Nimble routes admitted billing documents independently. Retain uncertain, failed and set-aside outcomes for review and reclassification. The owner-scoped Expenses inbox retains outstanding work per candidate. Questions and answers survive sessions. Connector finance events signal actionable work and polling recovers missed delivery. Visual reads return bounded model-visible images bound to the owned source, MIME part and page.
+
+Explicit candidate booking checks the observed candidate version and commits the expense and resolution atomically. Explicit linking retains each source and its declarations on the same economic expense. Similar amounts, dates and merchants alone never authorize merging. Each decision records its actor, basis and history. Activation requires deployed agent visual inspection, event receipt, direct upload, authorized booking and interrupted-session recovery.
 
 ### Financial reconciliation and annual review
 
@@ -590,11 +594,13 @@ disabled required operations do not complete two-way synchronization.
 | 019 | Require original-file intake for an attached expense | A failed handoff carries no authority to transcribe the bill into a receiptless expense. |
 | 016 | Reconcile distinct observations against one economic cost and one shared review queue | Source, funding, and tax decisions can proceed independently while annual reports retain their evidence. |
 | 015 | Separate agent-managed funding metadata, operator-managed credentials and unified source intake | Original evidence can be retained before extraction, funding attribution or tax review. |
+| 020 | Agent-reviewed Expenses inbox and separate evidence acquisition | Routing can recover independently of an authorized decision about a purchase. |
 
 ## 10. Version history
 
 | Version | Change |
 | --- | --- |
+| 1.8 | Adopts [Expenses inbox and agent review](deltas/2026-11-26T21-28-25Z-expenses-inbox-and-agent-review.md). |
 | 1.7 | Adopts [original receipt handling](deltas/2026-11-26T01-36-00Z-original-expense-receipt.md) for file-backed expenses. |
 | 1.6 | Adopts [the expense claim-intent default](deltas/2026-11-25T21-30-03Z-expense-claim-intent.md) for new and earlier receipt uploads. |
 | 1.5 | Adopts [idempotent invoice issuance and correction](deltas/2026-11-22T21-38-05Z-invoice-materialization-boundary.md). |

@@ -62,7 +62,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 12
-    networks: [docket-internal]
+    networks: [docket-internal, inference]
 
   financial-collector:
     image: ${DOCKET_IMAGE:-docket-docket:latest}
@@ -83,3 +83,6 @@ volumes:
 networks:
   docket-internal:
     internal: false
+  inference:
+    name: ${DOCKET_INFERENCE_NETWORK:-inference}
+    external: ${DOCKET_INFERENCE_EXTERNAL:-true}

@@ -18,7 +18,7 @@ from docket.schemas.work import WORK_TOOL_PURPOSES
 from docket.schemas.work_calendar import WORK_CALENDAR_PURPOSES
 from docket.schemas.workload import WORKLOAD_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-26-v75"
+CONTRACT_VERSION = "docket-tools-2026-11-26-v76"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -392,6 +392,7 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
        f"{definition.action.capitalize()} {definition.object_type} with ordinary business fields.")
       for definition in BUSINESS_DEFINITIONS
       if public_business_tool(definition) == definition.tool_name),
+    ("docket_read_financial_page", "Visually inspect one owned receipt image or PDF page."),
 ), start=1))
 CONTRACT_ENTRIES = {
     **CONTRACT_ENTRIES,

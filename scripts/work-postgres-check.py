@@ -2227,6 +2227,13 @@ async def check():
     tasks_evidence = await check_tasks(settings, factory, principal)
     from financial_intake_postgres_check import check_financial_intake
 
+    # Before any candidate decisions exist, the older invoice guard is still reachable.
+    try:
+        command.downgrade(config, "20261104e3f4")
+    except RuntimeError as exc:
+        assert str(exc) == "Retained invoice corrections prevent downgrade"
+    else:
+        raise AssertionError("Downgrade discarded populated invoice corrections")
     intake_evidence = await check_financial_intake(settings, factory, principal)
     from financial_review_postgres_check import check_financial_review
 
@@ -2412,7 +2419,7 @@ async def check():
     try:
         command.downgrade(config, "20261104e3f4")
     except RuntimeError as exc:
-        assert str(exc) == "Retained invoice corrections prevent downgrade"
+        assert str(exc) == "Retained candidate decisions prevent downgrade"
     else:
         raise AssertionError("Downgrade discarded populated work history")
     from alembic.runtime.migration import MigrationContext
@@ -2420,7 +2427,7 @@ async def check():
     from docket.models import TaskReminderAuthority
 
     with engine.connect() as connection:
-        assert MigrationContext.configure(connection).get_current_revision() == "20261123b2c3"
+        assert MigrationContext.configure(connection).get_current_revision() == "20261126a1b2"
     with factory() as session:
         assert session.scalar(select(TaskReminderAuthority.generation_ref).limit(1))
         assert session.scalar(select(WorkSession.id).limit(1))

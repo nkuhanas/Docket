@@ -34,8 +34,9 @@ class Settings(BaseSettings):
     financial_ollama_url: str = Field(
         default="http://ollama:11434", alias="DOCKET_FINANCIAL_OLLAMA_URL"
     )
-    financial_classifier_model: str = Field(default="", alias="DOCKET_FINANCIAL_CLASSIFIER_MODEL")
-    financial_extraction_model: str = Field(default="", alias="DOCKET_FINANCIAL_EXTRACTION_MODEL")
+    financial_classifier_model: str = Field(
+        default="nimble:9b-q8_0", alias="DOCKET_FINANCIAL_CLASSIFIER_MODEL"
+    )
     financial_file_hosts: str = Field(
         default="*.oaiusercontent.com", alias="DOCKET_FINANCIAL_FILE_HOSTS"
     )

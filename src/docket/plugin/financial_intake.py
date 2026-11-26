@@ -1,9 +1,9 @@
 """Native host file boundary. File capabilities never enter persisted command payloads."""
 
-from typing import Any
+from typing import Annotated, Any
 
-from mcp.types import ToolAnnotations
-from pydantic import ValidationError
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,10 +16,9 @@ from docket.mcp.instrumented import ProvenanceMCP
 from docket.models import Expense
 from docket.models.funding import AccountActivity
 from docket.plugin.business import model_function
-from docket.schemas.business import BUSINESS_BY_TOOL
 from docket.schemas.financial_intake import SubmitEvidence
 from docket.services.agent_requests import AgentRequestService
-from docket.services.business_commands import BusinessCommandService, public_validation_error
+from docket.services.business_commands import public_validation_error
 from docket.services.financial_files import download_file, rejected
 from docket.services.financial_intake import FinancialIntakeService
 from docket.services.funding import FundingService
@@ -69,6 +68,33 @@ def intake_context(
 
 
 def register_financial_intake(server: ProvenanceMCP, settings: Settings) -> None:
+    def visual(
+        source_ref: Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")],
+        part: Annotated[str, Field(pattern=r"^(file|mime/[0-9]{1,2})$")] = "file",
+        page: Annotated[int, Field(ge=1, le=25)] = 1,
+    ) -> CallToolResult:
+        """Inspect one retained financial image or PDF page. Use its intake document part."""
+        from docket.services.financial_visual import read_visual
+
+        try:
+            with session_scope() as session:
+                return read_visual(session, settings, source_ref, part, page)
+        except DocketError as exc:
+            import json
+
+            error = exc.as_dict()
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(error))],
+                structured_content=error,
+                is_error=True,
+            )
+
+    server.add_tool(
+        visual,
+        name="docket_read_financial_page",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+    )
+
     def submit(args: dict[str, Any]) -> dict[str, Any]:
         request_ref, request_key = args.pop("request_ref", None), args.pop("request_key", None)
         source = None
@@ -126,27 +152,6 @@ def register_financial_intake(server: ProvenanceMCP, settings: Settings) -> None
                     service.process(source)
             with session_scope() as session:
                 service = FinancialIntakeService(session, settings)
-                candidates = service.candidates(source)
-                # Auto-adopt one unambiguous purchase after committing the original.
-                if (
-                    len(candidates) == 1
-                    and candidates[0].purchase_key
-                    and not candidates[0].expense_ref
-                ):
-                    packet = intake_context(session, settings, source, [])
-                    definition = BUSINESS_BY_TOOL["docket_update_financial_candidate"]
-                    result = BusinessCommandService(session, settings).perform(
-                        definition,
-                        {
-                            "context_id": packet["context_id"],
-                            "operation_id": public.operation_id,
-                            "target_ref": candidates[0].ref_id,
-                        },
-                        request_ref,
-                        request_key,
-                    )
-                    if result.get("disposition") != "committed":
-                        candidates[0].review_reason = "expense_adoption_requires_review"
                 return service.receipt(service.owned(source))
         except ValidationError as exc:
             return public_validation_error(exc).as_dict()
@@ -165,7 +170,7 @@ def register_financial_intake(server: ProvenanceMCP, settings: Settings) -> None
         description=(
             "Pass the original chat attachment in file. Let the client supply its download link. "
             "Supply the stated business-use percentage. Docket defaults claim intent for that "
-            "share. May record an unambiguous expense. "
+            "share. Evidence only. Review the candidate and explicitly book or link it. "
             "If the original cannot be passed directly, stop and report the error. "
             "Do not create a manual expense or request another upload."
         ),

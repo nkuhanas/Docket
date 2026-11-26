@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import Field, WithJsonSchema
+from pydantic import Field, WithJsonSchema, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from docket.schemas.common import StrictModel
@@ -28,7 +28,11 @@ class SubmitEvidence(StrictModel):
     business_use_percent: Annotated[
         Decimal | None, WithJsonSchema({"type": "number", "minimum": 0, "maximum": 100})
     ] = Field(
-        default=None, ge=0, le=100, max_digits=9, decimal_places=6,
+        default=None,
+        ge=0,
+        le=100,
+        max_digits=9,
+        decimal_places=6,
         description="Reported business use from 0 to 100. A positive share is intended for claim.",
     )
     write_off_intent: bool | SkipJsonSchema[None] = Field(
@@ -41,6 +45,23 @@ CandidateRef = Annotated[str, Field(pattern=r"^fcand_[0-9A-HJKMNP-TV-Z]{26}$")]
 
 
 class ResolveEvidence(StrictModel):
+    decision: Literal["ask", "answer", "dismiss", "reopen"] | None = None
+    note: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1000,
+        description="Exact question, answer, reason or common purchase evidence for a link.",
+    )
     activity_ref: ActivityRef | None = None
     existing_expense_ref: ExpenseRef | None = None
     instrument_ref: InstrumentRef | None = None
+
+    @model_validator(mode="after")
+    def decision_fields(self) -> "ResolveEvidence":
+        if self.decision and (
+            self.activity_ref or self.instrument_ref or self.existing_expense_ref
+        ):
+            raise ValueError("Use one review decision or one link operation.")
+        if (self.decision or self.existing_expense_ref) and not (self.note or "").strip():
+            raise ValueError("Supply the question, answer or decision basis in note.")
+        return self

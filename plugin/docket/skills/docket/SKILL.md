@@ -68,6 +68,9 @@ payloads do not grant write authority. The client owns scheduling, inference and
 OAuth refresh. For triage-ready or a scheduled triage run, read the triage reference,
 claim one source, and use the separate triage permission. Empty queues stop the run.
 
+For a finance event with an intake reference, read the Expenses inbox and follow the
+[receipt review workflow](references/finance.md). Record or link the reviewed candidate explicitly.
+
 For `docket.system.alert`, report the operational condition from the retained
 inbox summary. Receipt is not resolution. Gmail staleness and backup failure do
 not authorize changes to credentials, retention policy or provider state.

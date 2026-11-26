@@ -69,3 +69,20 @@ class FinancialCandidate(Base):
     changeset_ref: Mapped[str | None] = mapped_column(ForeignKey("change_sets.ref_id"))
     version: Mapped[int] = mapped_column(default=1)
     review_reason: Mapped[str | None] = mapped_column(String(96))
+
+    route_attempts: Mapped[int] = mapped_column(default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_state: Mapped[str] = mapped_column(String(24), default="needs_review", index=True)
+
+
+class CandidateDecision(Base):
+    __tablename__ = "financial_candidate_decisions"
+    candidate_ref: Mapped[str] = mapped_column(
+        ForeignKey("financial_evidence_candidates.ref_id"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(primary_key=True)
+    decision: Mapped[str] = mapped_column(String(24))
+    note: Mapped[str | None] = mapped_column(String(1000))
+    actor: Mapped[str] = mapped_column(String(255))
+    changeset_ref: Mapped[str | None] = mapped_column(ForeignKey("change_sets.ref_id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

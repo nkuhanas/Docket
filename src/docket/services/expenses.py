@@ -24,9 +24,9 @@ from docket.models import (
     ToolInvocation,
 )
 from docket.models.base import utc_now
-from docket.models.financial_intake import FinancialIntake
+from docket.models.financial_intake import FinancialCandidate, FinancialIntake
 from docket.schemas.authority import ExpenseCreate, ExpenseModify, mutation_input_json
-from docket.schemas.expenses import ExpenseSpec, RecordExpense, UpdateExpense
+from docket.schemas.expenses import ExpenseSpec, RecordExpense, ReviewedExpenseSpec, UpdateExpense
 from docket.services.business_commands import _named_refs, mutation_plan
 from docket.services.compensation_policies import instant
 from docket.services.native_commands import NativeCommandService
@@ -237,7 +237,46 @@ class ExpenseService:
         )
 
     def apply(self, session: Session, changeset: Any, change: Any) -> list[str]:
-        spec = ExpenseSpec.model_validate(change.create_spec or change.payload)
+        from docket.services.expense_inbox import known_purchase, locked_candidate, transition
+        from docket.services.financial_files import rejected
+
+        if change.create_spec is None:
+            return self.apply_expense(
+                session, changeset, change, ExpenseSpec.model_validate(change.payload)
+            )
+        basis = ReviewedExpenseSpec.model_validate(change.create_spec)
+        spec = ExpenseSpec.model_validate(basis.model_dump(exclude={"candidate_ref"}))
+        if not basis.candidate_ref:
+            return self.apply_expense(session, changeset, change, spec)
+        candidate = locked_candidate(session, basis.candidate_ref, changeset.expected_versions)
+        if candidate.expense_ref or candidate.review_state != "needs_review":
+            raise rejected("candidate_transition_conflict")
+        if spec.receipt_ref != candidate.source_ref:
+            raise rejected("candidate_source_mismatch")
+        known = known_purchase(session, candidate)
+        if known or self.external(spec, lock=True):
+            raise DocketError(
+                code="expense_link_review_required",
+                message="Compare the retained sources and explicitly link the existing expense.",
+                details={"expense_ref": known} if known else {},
+            )
+        refs = self.apply_expense(session, changeset, change, spec)
+        candidate.expense_ref, candidate.expense_revision_ref = refs
+        candidate.disposition = "new_expense_recorded"
+        transition(
+            session,
+            candidate,
+            "booked",
+            "book",
+            None,
+            changeset.ref_id,
+            require_principal("commit").principal_ref,
+        )
+        return [*refs, candidate.ref_id]
+
+    def apply_expense(
+        self, session: Session, changeset: Any, change: Any, spec: ExpenseSpec
+    ) -> list[str]:
         spec = self.normalize(spec)
         head = self.head(change.object_ref, lock=True) if change.object_ref else None
         if head:
@@ -392,11 +431,33 @@ class ExpenseCommandService(NativeCommandService):
         service = ExpenseService(self.session)
 
         def build(context: NativeContext) -> dict[str, Any]:
+            patch = {key: value for key, value in values.items() if key in ExpenseSpec.model_fields}
             if isinstance(public, RecordExpense):
-                self.require_entry_basis(public, request_ref)
+                if public.candidate_ref:
+                    candidate = self.session.get(FinancialCandidate, public.candidate_ref)
+                    if not candidate or public.candidate_ref not in context.versions:
+                        raise DocketError(
+                            code="target_version_not_observed",
+                            message="Read the candidate's intake context first.",
+                        )
+                    if public.receipt_ref and public.receipt_ref != candidate.source_ref:
+                        raise DocketError(
+                            code="candidate_source_mismatch",
+                            message="Use the retained source for this candidate.",
+                        )
+                    patch["receipt_ref"] = candidate.source_ref
+                    self.require_entry_basis(
+                        public.model_copy(update={"receipt_ref": candidate.source_ref}), request_ref
+                    )
+                else:
+                    self.require_entry_basis(public, request_ref)
+                    if public.receipt_ref and self.session.get(FinancialIntake, public.receipt_ref):
+                        raise DocketError(
+                            code="candidate_required",
+                            message="Select the purchase in its intake context.",
+                        )
             head = service.head(public.expense_ref) if isinstance(public, UpdateExpense) else None
             old = service.spec(head) if head else None
-            patch = {key: value for key, value in values.items() if key in ExpenseSpec.model_fields}
             if head and not patch:
                 raise DocketError(
                     code="expense_change_required",
@@ -425,7 +486,14 @@ class ExpenseCommandService(NativeCommandService):
                     "object_type": "expense",
                     "object_ref": head.ref_id if head else None,
                     "affected_fields": sorted(patch) or ["expense"],
-                    "payload" if head else "create_spec": spec,
+                    "payload" if head else "create_spec": {
+                        **spec.model_dump(),
+                        **(
+                            {"candidate_ref": public.candidate_ref}
+                            if isinstance(public, RecordExpense) and public.candidate_ref
+                            else {}
+                        ),
+                    },
                 }
             )
             return mutation_plan(

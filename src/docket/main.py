@@ -109,10 +109,9 @@ def process_financial_source() -> None:
     from docket.services.financial_intake import FinancialIntakeService
 
     with session_scope() as session:
-        processed = FinancialIntakeService(session, settings).process()
-    if processed is None:
-        with session_scope() as session:
-            FinancialIntakeService(session, settings).suggest_pending()
+        FinancialIntakeService(session, settings).process()
+    with session_scope() as session:
+        FinancialIntakeService(session, settings).suggest_pending()
 
 
 worker = WorkerRuntime(

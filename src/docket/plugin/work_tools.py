@@ -347,6 +347,10 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         try:
             public = GetFinancialContext.model_validate(arguments)
             with session_scope() as session:
+                if public.inbox:
+                    from docket.services.expense_inbox import inbox
+
+                    return inbox(session, public.inbox, public.cursor, public.limit)
                 if public.intake_ref:
                     from docket.plugin.financial_intake import intake_context
 
