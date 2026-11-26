@@ -325,8 +325,34 @@ async def test_receipt_through_both_channels_statement_match_and_revocation(
         )
         assert image["outcomes"][0]["disposition"] == "evidence_only"
         assert not image["outcomes"][0]["declarations"]
+        assert image["review_required"]
+        cost = await command(
+            "docket_record_expense",
+            await packet(),
+            "cost-from-original",
+            vendor="Test Merchant",
+            description="Supported cost",
+            amount="10",
+            currency="USD",
+            receipt_ref=image["source_ref"],
+            source_method="import",
+        )
+        cost_ref = cost["expenses"][0]["ref"]
+        ctx = await call(
+            "docket_get_financial_context", {"intake_ref": image["source_ref"], "refs": [cost_ref]}
+        )
+        await command(
+            "docket_update_financial_candidate",
+            ctx,
+            "link-retained-evidence",
+            target_ref=image["outcomes"][0]["candidate_ref"],
+            existing_expense_ref=cost_ref,
+        )
+        linked = await call("docket_get_financial_context", {"intake_ref": image["source_ref"]})
+        assert linked["extraction"] == "partial" and not linked["review_required"]
+        assert linked["outcomes"][0]["expense_ref"] == cost_ref
     with session_factory.begin() as session:
-        assert session.scalar(select(func.count()).select_from(Expense)) == 1
+        assert session.scalar(select(func.count()).select_from(Expense)) == 2
         session.scalar(select(FinancialCollector)).enabled = False
     assert mail.post(path, headers=headers, content=original).status_code == 403
 
@@ -457,3 +483,66 @@ def test_host_files_without_optional_type_hints():
     assert "document_id" not in purchase
     assert media_type(b"posted_on,amount,currency\n", None, None) == "text/csv"
     assert media_type(b"Subject: Test\r\n\r\ntest", None, None) == "message/rfc822"
+
+
+def test_single_page_invoice_reads_columns_from_original_bytes():
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import DecodedStreamObject, NameObject
+    from test_attachment_evidence import _pdf_bytes
+
+    from docket.services.financial_files import extract, media_type
+
+    writer = PdfWriter()
+    page = writer.add_page(PdfReader(BytesIO(_pdf_bytes("Invoice"))).pages[0])
+    fields = [
+        (40, 720, "Invoice"),
+        (40, 700, "Date of issue   June 18, 2026"),
+        (40, 680, "Invoice number INV-19"),
+        (40, 650, "Example Supply LLC"),
+        (300, 650, "Bill to"),
+        (300, 635, "Example Customer"),
+        (300, 520, "Total"),
+        (456, 520, "$1,200.00"),
+        (300, 500, "Amount due"),
+        (456, 500, "$1,200.00 USD"),
+    ]
+    stream = DecodedStreamObject()
+    stream.set_data(
+        "\n".join(f"BT /F1 12 Tf {x} {y} Td ({s}) Tj ET" for x, y, s in fields).encode("ascii")
+    )
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    pdf = BytesIO()
+    writer.write(pdf)
+    raw = pdf.getvalue()
+    (facts,) = extract(raw, media_type(raw, None, "attachment"))
+    assert facts == {
+        "anchor": "file/page/1",
+        "method": "tabular_invoice_v1",
+        "vendor": "Example Supply LLC",
+        "currency": "USD",
+        "amount": "1200.00",
+        "incurred_on": "2026-06-18",
+        "document_id": "INV-19",
+    }
+
+
+def test_tabular_invoice_leaves_ambiguous_or_non_purchase_evidence_for_review():
+    from docket.services.financial_files import purchase, tabular_invoice
+
+    source = (
+        "Invoice\nDate of issue  June 18, 2026\nVendor LLC   Bill to\n"
+        "Total $120\nAmount due $120.00 USD"
+    )
+    for layout in (
+        source.replace("USD", "EUR"),
+        source.replace(" USD", ""),
+        source.replace("$120.00", "$20.00"),
+        source + "\nTotal $105",
+        source.replace("Vendor LLC   Bill to", "Bill to\nClient LLC"),
+        source + "\nCredit note",
+        source.replace("June 18", "June 31"),
+    ):
+        before = purchase(layout, "file/page/1")
+        assert tabular_invoice(layout, before) == before

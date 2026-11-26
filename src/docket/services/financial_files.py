@@ -8,7 +8,8 @@ import re
 import socket
 import ssl
 from collections.abc import Callable
-from datetime import date
+from contextlib import suppress
+from datetime import date, datetime
 from decimal import Decimal
 from email import policy
 from email.parser import BytesParser
@@ -18,6 +19,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
@@ -221,14 +223,77 @@ def payroll(text: str, anchor: str) -> dict[str, Any]:
 TextFacts = Callable[[str, str], dict[str, Any]]
 
 
+def tabular_invoice(layout: str, labelled: dict[str, Any]) -> dict[str, Any]:
+    """Read a single issuer/bill-to invoice with an explicitly denominated total."""
+    lines = [line.strip() for line in layout.splitlines() if line.strip()]
+    if len(layout) > 32000 or lines.count("Invoice") != 1 or labelled.get("review_only"):
+        return labelled
+
+    # A right-hand Bill to heading identifies the seller on its left. A standalone
+    # company name, billing address or customer label does not identify the issuer.
+    sellers = [m[1] for line in lines if (m := re.fullmatch(r"(.{1,120}?) {2,}Bill to", line))]
+    totals = [line for line in lines if re.match(r"Total\b", line)]
+    balances = [line for line in lines if re.match(r"Amount due\b", line)]
+    dates = [line for line in lines if re.match(r"Date of issue\b", line)]
+    if any(len(values) != 1 for values in (sellers, totals, balances, dates)):
+        return labelled
+    seller = sellers[0].strip()
+    if (
+        not any(c.isalpha() for c in seller)
+        or "  " in seller
+        or "@" in seller
+        or not seller.isprintable()
+        or re.search(r"(?:\d[ -]?){12}", seller)
+        or seller.casefold() in {"from", "seller", "vendor", "ship to", "bill from", "bill to"}
+    ):
+        return labelled
+    amount = r"((?:[0-9]{1,3}(?:,[0-9]{3}){1,4}|[0-9]{1,15})(?:\.[0-9]{1,6})?)"
+    total = re.fullmatch(r"Total\s+([$£€]?)" + amount, totals[0])
+    balance = re.fullmatch(r"Amount due\s+([$£€]?)" + amount + r"\s+([A-Z]{3})", balances[0])
+    if not total or not balance:
+        return labelled
+    currency = balance[3]
+    allowed = {"$": {"USD", "CAD", "AUD", "NZD", "SGD", "HKD"}, "€": {"EUR"}, "£": {"GBP"}}
+    if any(symbol and currency not in allowed[symbol] for symbol in (total[1], balance[1])):
+        return labelled
+    value = total[2].replace(",", "")
+    if Decimal(value) <= 0 or Decimal(value) != Decimal(balance[2].replace(",", "")):
+        return labelled
+    try:
+        issued = datetime.strptime(dates[0].removeprefix("Date of issue").strip(), "%B %d, %Y")
+    except ValueError:
+        return labelled
+    fields = dict(
+        vendor=seller, currency=currency, amount=value, incurred_on=issued.date().isoformat()
+    )
+    if any(key in labelled and labelled[key] != val for key, val in fields.items()):
+        return labelled
+    return {**labelled, **fields, "method": "tabular_invoice_v1"}
+
+
 def pdf_text(blob: bytes, anchor: str, parse: TextFacts = purchase) -> list[dict[str, Any]]:
     reader = PdfReader(io.BytesIO(blob), strict=True)
     if reader.is_encrypted or len(reader.pages) > 25:
         return []
-    return [
-        parse((page.extract_text() or "")[:32000], f"{anchor}/page/{i}")
-        for i, page in enumerate(reader.pages, 1)
-    ]
+    facts = []
+    for i, page in enumerate(reader.pages, 1):
+        plain = page.extract_text() or ""
+        item = parse(plain[:32000], f"{anchor}/page/{i}")
+        if (
+            parse is purchase
+            and len(reader.pages) == 1
+            and len(plain) <= 32000
+            and not item.get("review_only")
+            and not {"vendor", "amount"} <= item.keys()
+            and "Bill to" in plain
+            and "Amount due" in plain
+            and "Date of issue" in plain
+        ):
+            # Some PDFs provide plain text while layout reconstruction fails.
+            with suppress(PdfReadError, ValueError, IndexError, KeyError):
+                item = tabular_invoice(page.extract_text(extraction_mode="layout") or "", item)
+        facts.append(item)
+    return facts
 
 
 class BillingText(HTMLParser):

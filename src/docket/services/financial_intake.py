@@ -344,6 +344,9 @@ class FinancialIntakeService:
                     "review_reason": c.review_reason,
                 }
             )
+        unresolved_reason = bool(row.reason)
+        if row.reason == "financial_facts_unresolved" and candidates:
+            unresolved_reason = any(not c.expense_ref for c in candidates)
         return {
             "ok": True,
             "source_ref": row.source_ref,
@@ -358,7 +361,7 @@ class FinancialIntakeService:
             "next_cursor": str(offset + limit) if len(candidates) > offset + limit else None,
             "outcome_count": len(outcomes),
             "review_required": bool(
-                row.reason
+                unresolved_reason
                 or any(c.review_reason for c in candidates)
                 or any(o["review_required"] for o in outcomes)
             ),
