@@ -1,6 +1,6 @@
 # Forward delta index
 
-Current specification: [SPEC 1.6](../SPEC.md).
+Current specification: [SPEC 1.7](../SPEC.md).
 
 | Delta | Adoption | Implementation |
 | --- | --- | --- |
@@ -10,6 +10,7 @@ Current specification: [SPEC 1.6](../SPEC.md).
 | [2026-11-22T22-08-43Z — financial ingestion and tax records](2026-11-22T22-08-43Z-financial-ingestion-and-tax-records.md) | F1/F2 adopted in SPEC 1.3. F3–F5 adopted in SPEC 1.4, implementation and synthetic verification tracked separately. | Funding and shared intake deployed at 53cfd88, private plugin 2.3.0. ChatGPT file upload and live Purelymail collection verified, including original bytes, the standing declaration and replay. [Activation evidence](../evidence/financial-intake/activation.json). |
 | [2026-11-22T21-38-05Z — issue an invoice when preparing its export](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Adopted in SPEC 1.5. | Final exports, editable numbered invoices and revision-pinned settlement. |
 | [2026-11-25T21-30-03Z — expense claim intent](2026-11-25T21-30-03Z-expense-claim-intent.md) | Adopted in SPEC 1.6. | Receipt, expense evidence and fresh annual workpapers apply the declared share. |
+| [2026-11-26T01-36-00Z — original expense receipt](2026-11-26T01-36-00Z-original-expense-receipt.md) | Adopted in SPEC 1.7. | Require the original on file-backed expense requests and stop on transfer failure. |
 
 ## Historical notes
 

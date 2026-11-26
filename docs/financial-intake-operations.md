@@ -22,8 +22,17 @@ attachment. A bare file ID or local file reference reaching Docket returns
 `file_attachment_not_bound`. An unapproved initial URL returns `file_host_not_approved`.
 A blocked redirect returns `file_redirect_not_approved`. A missing, expired or inaccessible
 file at the approved service can return `file_download_unavailable`. These errors occur
-before source acceptance. Select the original attachment again and retry the same operation.
-Share only the error code when troubleshooting. Signed URLs are private.
+before source acceptance. A DNS failure from the Docket downloader returns
+`file_download_dns_failed`. When the client reports a download error, check for a
+matching audited submission before attributing the error to Docket. On a failed
+handoff, stop and report the error. Do not request another upload or record a
+manual expense. A lost response to an accepted call can be replayed with the
+same operation ID. Share only the error code when troubleshooting.
+
+Use `manual_entry_requested=true` on `docket_record_expense` only for a
+standalone cost directly reported by the operator. When supplying a receipt
+reference, use an owned, retained original. A reimbursement policy can still
+require a receipt for a directly reported cost before invoicing.
 
 ## Dedicated billing mailbox
 

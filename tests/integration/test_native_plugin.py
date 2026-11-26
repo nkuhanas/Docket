@@ -528,6 +528,8 @@ async def test_native_delegation_commits_replays_and_optionally_records_context(
         assert fields["write_off_intent"]["type"] == "boolean"
         assert "write_off_intent" not in upload.input_schema["required"]
         assert upload.meta["openai/fileParams"] == ["file"]
+        assert fields["file"]["type"] == "object"
+        assert set(fields["file"]["required"]) == {"download_url", "file_id"}
         assert not (
             {"docket_stage_changes", "docket_review_changeset", "docket_commit_changeset"}
             & set(tools)

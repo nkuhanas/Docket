@@ -1098,6 +1098,7 @@ async def check_expenses(settings, factory, principal):
         return {
             "context_id": packet["context_id"],
             "operation_id": f"pg-expense-import-{index}",
+            "manual_entry_requested": True,
             "amount": "0.000000003",
             "currency": "USD",
             "description": "Synthetic expense",

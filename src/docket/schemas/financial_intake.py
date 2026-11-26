@@ -24,7 +24,7 @@ class SubmitEvidence(StrictModel):
         default=None,
         description="Retain pay or statement evidence without purchase extraction.",
     )
-    file: HostFile
+    file: Annotated[HostFile, WithJsonSchema(HostFile.model_json_schema())]
     business_use_percent: Annotated[
         Decimal | None, WithJsonSchema({"type": "number", "minimum": 0, "maximum": 100})
     ] = Field(

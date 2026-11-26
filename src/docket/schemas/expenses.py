@@ -72,6 +72,11 @@ class ExpenseReportingFields(StrictModel):
 
 
 class RecordExpense(ExpenseFields, ExpenseReportingFields, CommandBase):
+    manual_entry_requested: bool = Field(
+        default=False,
+        description="True only for a standalone cost the operator directly reports without a file. "
+        "A failed attachment never authorizes manual entry.",
+    )
     amount: Money
     currency: Currency
     description: str = Field(min_length=1, max_length=4000)
@@ -144,9 +149,9 @@ class QueryExpenses(StrictModel):
 
 
 EXPENSE_TOOL_PURPOSES = {
-    "docket_record_expense": "Record a reported cost and optional reimbursement/receipt context. "
-    "Missing receipts/dates/attribution do not block recording. Stable external IDs deduplicate; "
-    "similar date/amount/vendor only suggests a duplicate. No payment or provider effect.",
+    "docket_record_expense": "Record a directly reported cost. A receiptless entry requires "
+    "manual_entry_requested. For a supplied file use docket_submit_financial_evidence. "
+    "Stop if the original cannot be passed. Stable external IDs deduplicate.",
     "docket_update_expense": "Correct costs or record reported submission/approval/rejection. "
     "Earlier cost/approval snapshots remain immutable. An approval is not money received; "
     "a cost correction does not silently change an earlier approved amount.",

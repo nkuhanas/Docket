@@ -1,8 +1,8 @@
 # Docket specification
 
-Version: 1.6
+Version: 1.7
 Adopted: November 25, 2026
-Implementation baseline: `ac40de0`
+Implementation baseline: `6a4d7c9`
 
 ## 1. Status and change control
 
@@ -253,7 +253,12 @@ Draft-reserved, reported, issued and available quantities remain queryable.
 
 Expenses are separate records with date, exact amount/currency, vendor/category,
 attribution, reimbursement eligibility, optional protected receipt and reported
-equipment ownership. Missing optional capture does not block recording. Travel
+equipment ownership. A standalone cost reported without a receipt requires
+explicit manual-entry intent. When the operator supplies an original, use
+financial intake and require durable source acceptance. If the attachment
+handoff fails, stop and report the error without another upload or a manual
+expense. A source reference on a new expense must identify an owned, retained
+original. Travel
 reimbursement does not establish paid travel time. Track claim/submission/approval
 separately from partial reimbursement, refunds and credits. Stable external IDs
 deduplicate transactions; matching amount/date/vendor only suggests a duplicate.
@@ -582,6 +587,7 @@ disabled required operations do not complete two-way synchronization.
 | 014 | Use Google-style current-subtree behavior for task-parent completion/deletion and native hierarchy moves | Operator-selected scope matches real API cascades without adding recursive inputs or recurring prompts. Adding a child does not change the parent's ETag; retain actual outcomes and protect unrelated records. |
 | 017 | Issue on final export and retain numbered invoice revisions | Reopening preserves the last collectible basis and cash history while the draft is edited. |
 | 018 | Derive claim intent from positive manual business use | One reported percentage states the intended share. Explicit exceptions, original evidence and reviewed tax amounts retain their own meaning. |
+| 019 | Require original-file intake for an attached expense | A failed handoff carries no authority to transcribe the bill into a receiptless expense. |
 | 016 | Reconcile distinct observations against one economic cost and one shared review queue | Source, funding, and tax decisions can proceed independently while annual reports retain their evidence. |
 | 015 | Separate agent-managed funding metadata, operator-managed credentials and unified source intake | Original evidence can be retained before extraction, funding attribution or tax review. |
 
@@ -589,6 +595,7 @@ disabled required operations do not complete two-way synchronization.
 
 | Version | Change |
 | --- | --- |
+| 1.7 | Adopts [original receipt handling](deltas/2026-11-26T01-36-00Z-original-expense-receipt.md) for file-backed expenses. |
 | 1.6 | Adopts [the expense claim-intent default](deltas/2026-11-25T21-30-03Z-expense-claim-intent.md) for new and earlier receipt uploads. |
 | 1.5 | Adopts [idempotent invoice issuance and correction](deltas/2026-11-22T21-38-05Z-invoice-materialization-boundary.md). |
 | 1.4 | Adopts F3–F5 reconciliation, reviewed tax workpapers and annual reporting. |
