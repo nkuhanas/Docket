@@ -1,0 +1,53 @@
+{
+  "spec": "1.8",
+  "release_pr": 81,
+  "deployed_commit": "0aeef388bdeb63d007e862e663f61e1806b85a8a",
+  "tree": "43a944ac64358276ec1627234cc6a5a03c2d60f4",
+  "image": "sha256:fb8755407a23109829bb89fe0ef1b7131cd3ab794416b511031c0f7cc0ea959d",
+  "migration": "20261126a1b2",
+  "private_plugin_version": "2.7.0",
+  "plugin_release": "pluginrel_6b08ae82530c8191992e4c1be96a678f",
+  "checks": {
+    "pytest_passed": 618,
+    "ruff": "passed",
+    "mypy": "passed",
+    "release_groups": [
+      "native",
+      "provider",
+      "release",
+      "storage"
+    ],
+    "postgresql_concurrent_expense_booking": "passed",
+    "retained_history_downgrade_guards": "passed",
+    "postdeploy_readiness": "passed"
+  },
+  "live_synthetic_fixture": {
+    "invoice": "SI-20261126-EIR",
+    "pdf_sha256": "f216778f288b33bb11c78e07b87149991e31a9a9a7e1a404d85b6933abafede2",
+    "pdf_bytes": 85221,
+    "direct_upload": {
+      "source_ref": "src_01M8CYMB3FJVRS02D32CZJMS8A",
+      "candidate_ref": "fcand_01M8CYMC1N924WMPZR177Y3PN6",
+      "source_digest_verified": true,
+      "declared_business_use_percent": "60",
+      "expense_on_acceptance": false
+    },
+    "purelymail": {
+      "source_ref": "src_01M8CYMNFSZ5VZX8M15KB9WG1Z",
+      "pdf_candidate_ref": "fcand_01M8CYMNVYAFP1MNDR084BWQ09",
+      "part": "mime/2",
+      "routing": "uncertain",
+      "needs_agent_review": true,
+      "checkpoint_advanced": true,
+      "expense_on_acceptance": false
+    },
+    "notifications": {
+      "published_mail": 2,
+      "published_direct": 1,
+      "active_subscriptions_at_publication": 0,
+      "client_delivery": "unverified"
+    },
+    "deployed_model_visible_page": "pending",
+    "authorized_booking_and_link": "pending"
+  }
+}

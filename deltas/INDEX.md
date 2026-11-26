@@ -11,7 +11,7 @@ Current specification: [SPEC 1.8](../SPEC.md).
 | [2026-11-22T21-38-05Z — issue an invoice when preparing its export](2026-11-22T21-38-05Z-invoice-materialization-boundary.md) | Adopted in SPEC 1.5. | Final exports, editable numbered invoices and revision-pinned settlement. |
 | [2026-11-25T21-30-03Z — expense claim intent](2026-11-25T21-30-03Z-expense-claim-intent.md) | Adopted in SPEC 1.6. | Receipt, expense evidence and fresh annual workpapers apply the declared share. |
 | [2026-11-26T01-36-00Z — original expense receipt](2026-11-26T01-36-00Z-original-expense-receipt.md) | Adopted in SPEC 1.7. | Require the original on file-backed expense requests and stop on transfer failure. |
-| [2026-11-26T21-28-25Z — expenses inbox and agent review](2026-11-26T21-28-25Z-expenses-inbox-and-agent-review.md) | Adopted in SPEC 1.8. | Implementation in progress. Real-client activation pending. |
+| [2026-11-26T21-28-25Z — expenses inbox and agent review](2026-11-26T21-28-25Z-expenses-inbox-and-agent-review.md) | Adopted in SPEC 1.8. | Deployed at `0aeef38` with private plugin 2.7.0. A synthetic invoice reached review through Purelymail and direct file upload. The [acceptance receipt](../evidence/financial-intake/expenses-inbox-activation.json) tracks agent-side visual inspection, booking and event delivery. |
 
 ## Historical notes
 
