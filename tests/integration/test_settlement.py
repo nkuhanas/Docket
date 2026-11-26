@@ -292,6 +292,7 @@ async def test_reimbursement_nanounits_claim_correction_replacement_and_missing_
             "docket_record_expense",
             [],
             "settlement-expense",
+            manual_entry_requested=True,
             amount="0.000000003",
             currency="USD",
             description="Synthetic expense",

@@ -166,7 +166,8 @@ def register_financial_intake(server: ProvenanceMCP, settings: Settings) -> None
             "Pass the original chat attachment in file. Let the client supply its download link. "
             "Supply the stated business-use percentage. Docket defaults claim intent for that "
             "share. May record an unambiguous expense. "
-            "On a handoff error, re-select the attachment and reuse the operation ID."
+            "If the original cannot be passed directly, stop and report the error. "
+            "Do not create a manual expense or request another upload."
         ),
         annotations=ToolAnnotations(
             read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True

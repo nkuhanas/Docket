@@ -131,6 +131,7 @@ async def test_invoice_partial_overtime_shared_timesheet_expense_and_number_retr
             "docket_record_expense",
             [eng],
             "invoice-expense",
+            manual_entry_requested=True,
             amount="10",
             currency="USD",
             description="Synthetic reimbursable hardware",
@@ -186,6 +187,7 @@ async def test_invoice_partial_overtime_shared_timesheet_expense_and_number_retr
             "docket_record_expense",
             [eng],
             "invoice-old-expense",
+            manual_entry_requested=True,
             amount="1",
             currency="USD",
             description="Synthetic earlier uninvoiced cost",
@@ -281,13 +283,13 @@ async def test_invoice_preview_basis_cancellation_and_missing_terms_do_not_block
             "docket_record_expense",
             [eng],
             "invoice-receipt-gap",
+            manual_entry_requested=True,
             amount="10",
             currency="USD",
             description="Synthetic receipt gap",
             engagement_ref=eng,
             reimbursable=True,
             receipt_required=True,
-            receipt_ref=new_public_ref("src"),
         )
         fee = expense["expenses"][0]["ref"]
         draft = await change(

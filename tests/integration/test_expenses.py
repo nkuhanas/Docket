@@ -10,7 +10,6 @@ from sqlalchemy import func, select
 from test_work_lineage import change
 from test_work_reports import work_client
 
-from docket.domain.public_refs import new_public_ref
 from docket.models import Expense, ExpenseObservation, ExpenseRevision, Operation
 from docket.plugin.server import PluginMCP
 from docket.schemas.expenses import EXPENSE_TOOL_PURPOSES
@@ -42,19 +41,19 @@ async def test_expense_optional_evidence_external_identity_and_frozen_approval(
             "docket_record_expense",
             [],
             "cost-missing-receipt",
+            manual_entry_requested=True,
             amount="120.000000001",
             currency="USD",
             description="Example hardware procurement",
             vendor="Example vendor",
             reimbursable=True,
-            receipt_ref=new_public_ref("src"),
             receipt_required=True,
             external_source="example-import",
             external_id="example-cost-42",
         )
         expense = created["expenses"][0]
         ref = expense["ref"]
-        assert expense["receipt_status"] == "unavailable"
+        assert expense["receipt_status"] == "not_provided"
         assert expense.get("incurred_on") is None
         assert "required_receipt_unavailable" in expense["flags"]
         repeated = await change(
@@ -62,6 +61,7 @@ async def test_expense_optional_evidence_external_identity_and_frozen_approval(
             "docket_record_expense",
             [],
             "cost-second-import",
+            manual_entry_requested=True,
             amount="120.000000001",
             currency="USD",
             description="Example hardware procurement",
@@ -111,6 +111,7 @@ async def test_expense_optional_evidence_external_identity_and_frozen_approval(
             {
                 "context_id": context["context_id"],
                 "operation_id": "cost-collision",
+                "manual_entry_requested": True,
                 "amount": "999",
                 "currency": "USD",
                 "description": "Changed imported cost",
@@ -140,6 +141,7 @@ async def test_expense_exact_full_totals_stable_detail_and_unicode_exports(linke
                 "docket_record_expense",
                 [],
                 f"report-cost-{index}",
+                manual_entry_requested=True,
                 amount=amount,
                 currency=currency,
                 incurred_on=when,

@@ -39,4 +39,5 @@ secrets/restore/*
 !/deltas/2026-11-22T21-38-05Z-invoice-materialization-boundary.md
 !/deltas/2026-11-22T22-08-43Z-financial-ingestion-and-tax-records.md
 !/deltas/2026-11-25T21-30-03Z-expense-claim-intent.md
+!/deltas/2026-11-26T01-36-00Z-original-expense-receipt.md
 .playwright-cli/

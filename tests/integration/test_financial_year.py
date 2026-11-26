@@ -412,6 +412,7 @@ async def test_statement_renewal_asset_review_and_protected_export(
                 "docket_record_expense",
                 [],
                 "equipment",
+                manual_entry_requested=True,
                 amount="100",
                 currency="USD",
                 description="Equipment",

@@ -1,4 +1,4 @@
-"""Canonical reported costs; optional receipt capture never gates valid recording."""
+"""Canonical expenses from retained originals and explicitly reported standalone costs."""
 
 from decimal import Decimal
 from typing import Any
@@ -11,6 +11,9 @@ from docket.agent_auth import require_principal
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.models import (
+    AttachmentEvidence,
+    AuthenticatedRequest,
+    EncryptedAttachmentBlob,
     Engagement,
     Entity,
     Expense,
@@ -18,8 +21,10 @@ from docket.models import (
     ExpenseRevision,
     NativeContext,
     Source,
+    ToolInvocation,
 )
 from docket.models.base import utc_now
+from docket.models.financial_intake import FinancialIntake
 from docket.schemas.authority import ExpenseCreate, ExpenseModify, mutation_input_json
 from docket.schemas.expenses import ExpenseSpec, RecordExpense, UpdateExpense
 from docket.services.business_commands import _named_refs, mutation_plan
@@ -333,6 +338,48 @@ class ExpenseService:
 
 
 class ExpenseCommandService(NativeCommandService):
+    def require_entry_basis(self, command: RecordExpense, request_ref: str) -> None:
+        if command.receipt_ref:
+            owner = require_principal("commit").operator_ref
+            retained = self.session.scalar(
+                select(AttachmentEvidence.ref_id)
+                .join(
+                    EncryptedAttachmentBlob,
+                    EncryptedAttachmentBlob.attachment_source_ref == AttachmentEvidence.ref_id,
+                )
+                .outerjoin(
+                    AuthenticatedRequest,
+                    AuthenticatedRequest.ref_id == AttachmentEvidence.authenticated_request_ref,
+                )
+                .outerjoin(FinancialIntake, FinancialIntake.source_ref == AttachmentEvidence.ref_id)
+                .where(
+                    AttachmentEvidence.ref_id == command.receipt_ref,
+                    AttachmentEvidence.ingest_state == "available",
+                    AttachmentEvidence.retention_disposition == "retained_encrypted",
+                    (AuthenticatedRequest.operator_ref == owner)
+                    | (FinancialIntake.operator_ref == owner),
+                )
+            )
+            if retained:
+                return
+        elif command.manual_entry_requested:
+            # A known file submission and its direct expense fallback can share one request.
+            attempted_upload = self.session.scalar(
+                select(ToolInvocation.ref_id)
+                .where(
+                    ToolInvocation.authenticated_request_ref == request_ref,
+                    ToolInvocation.tool_name == "docket_submit_financial_evidence",
+                )
+                .limit(1)
+            )
+            if not attempted_upload:
+                return
+        raise DocketError(
+            code="expense_original_required",
+            message="Docket needs the original attachment for this expense. Stop if it "
+            "could not be transferred. Do not log it manually or request another upload.",
+        )
+
     def perform(
         self, command: str, arguments: dict[str, Any], request_ref: str, request_key: str
     ) -> dict[str, Any]:
@@ -345,6 +392,8 @@ class ExpenseCommandService(NativeCommandService):
         service = ExpenseService(self.session)
 
         def build(context: NativeContext) -> dict[str, Any]:
+            if isinstance(public, RecordExpense):
+                self.require_entry_basis(public, request_ref)
             head = service.head(public.expense_ref) if isinstance(public, UpdateExpense) else None
             old = service.spec(head) if head else None
             patch = {key: value for key, value in values.items() if key in ExpenseSpec.model_fields}

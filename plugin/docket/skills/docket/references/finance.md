@@ -66,9 +66,9 @@ draft flags conflicting choices. Work context distinguishes invoice-reserved,
 invoiced and uninvoiced quantities. Corrections flag older issued documents for
 reconciliation; they do not erase earlier billed units or manufacture payment.
 
-Use `docket_record_expense` for amount, currency and description; date, attribution,
-reimbursement classification and protected receipt source are optional. Missing
-receipt capture leaves a gap and does not block recording. Stable external_source
+For a standalone cost the operator reports directly, use `docket_record_expense`
+with amount, currency, description and manual_entry_requested=true. An attached
+bill always uses original-file intake. Stable external_source
 plus external_id prevents duplicate imports; similarity alone is a suggestion.
 Use `docket_update_expense` for corrections or a reported submission_status and
 optional claim_amount/observed_at. Omit an unknown decision time. Earlier approvals
@@ -98,8 +98,9 @@ create no bank transfer, payroll submission or provider delivery.
 Use docket_get_funding_context to manage non-secret funding accounts and cards.
 For an uploaded receipt or statement, select the original attachment as the file input to
 docket_submit_financial_evidence. Let the client bind the file ID and temporary download
-URL. Never construct a link from a file ID, chat link or sandbox path. If the handoff
-fails, re-select the attachment with the same operation_id and declarations. Report acceptance
+URL. Never construct a link from a file ID, chat link or sandbox path. If the original
+cannot be transferred, stop and report the error. Do not request another upload,
+transcribe it into an expense or set manual_entry_requested. Report acceptance
 only when the receipt returns source_accepted and a source_ref. For “60% business, Savor
 card,” pass business_use_percent=60 and reported_instrument="Savor". Docket treats
 that 60% as intended for claim. For “60% business, do not claim,” also pass

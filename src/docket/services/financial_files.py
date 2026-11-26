@@ -5,6 +5,7 @@ import hashlib
 import http.client
 import io
 import re
+import socket
 import ssl
 from collections.abc import Callable
 from datetime import date
@@ -43,8 +44,7 @@ def download_file(url: str, hosts: frozenset[str], limit: int) -> bytes:
             if hop == 0 and parts.scheme in ("", "sandbox", "file", "attachment", "file-service"):
                 raise DocketError(
                     code="file_attachment_not_bound",
-                    message="Select the original attachment in the tool's file field and retry "
-                    "with the same operation ID. The client must supply its download link.",
+                    message="The client did not supply a downloadable original. Stop here.",
                 )
             if (
                 parts.scheme != "https"
@@ -61,15 +61,13 @@ def download_file(url: str, hosts: frozenset[str], limit: int) -> bytes:
                 if hop:
                     raise DocketError(
                         code="file_redirect_not_approved",
-                        message="The attachment download redirected outside the approved HTTPS "
-                        "destinations. Re-select the original file and retry with the same "
-                        "operation ID.",
+                        message="The original redirected outside the approved HTTPS destinations. "
+                        "Docket could not receive it.",
                     )
                 raise DocketError(
                     code="file_host_not_approved",
                     message="The supplied link is outside the approved HTTPS file destinations. "
-                    "Pass the original attachment through the client's file field and retry "
-                    "with the same operation ID.",
+                    "Docket could not receive the original.",
                 )
             connection = http.client.HTTPSConnection(
                 parts.hostname, timeout=10, context=ssl.create_default_context()
@@ -88,9 +86,7 @@ def download_file(url: str, hosts: frozenset[str], limit: int) -> bytes:
                     if response.status in (401, 403, 404, 410):
                         raise DocketError(
                             code="file_download_unavailable",
-                            message="The file service could not provide this attachment. "
-                            "Re-select it to obtain a fresh download link and retry with "
-                            "the same operation ID.",
+                            message="The file service could not provide the original attachment.",
                         )
                     break
                 data = response.read(limit + 1)
@@ -99,6 +95,11 @@ def download_file(url: str, hosts: frozenset[str], limit: int) -> bytes:
                 return data
             finally:
                 connection.close()
+    except socket.gaierror:
+        raise DocketError(
+            code="file_download_dns_failed",
+            message="Docket could not resolve the approved file host to download the original.",
+        ) from None
     except (ValueError, OSError, http.client.HTTPException):
         pass
     raise rejected("file_transfer_failed")

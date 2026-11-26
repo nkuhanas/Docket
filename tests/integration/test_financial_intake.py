@@ -2,6 +2,7 @@
 
 import pytest
 import test_native_plugin
+from sqlalchemy import select
 from test_work_reports import work_client
 
 linked_plugin = test_native_plugin.linked_plugin
@@ -100,10 +101,11 @@ async def test_funding_lifecycle(linked_plugin):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
-async def test_attachment_tool_receipt_and_replay(linked_plugin, monkeypatch):
+async def test_attachment_tool_receipt_and_replay(linked_plugin, monkeypatch, session_factory):
     import hashlib
 
     from docket.domain.public_refs import new_public_ref
+    from docket.models import Expense, FinancialIntake
     from docket.plugin import financial_intake as native
 
     blob = (
@@ -129,6 +131,23 @@ async def test_attachment_tool_receipt_and_replay(linked_plugin, monkeypatch):
         failed = await call("docket_submit_financial_evidence", {**args, "file": unbound})
         assert failed["error"]["code"] == "file_attachment_not_bound"
         assert "source_ref" not in failed
+        standalone = {
+            "context_id": context["context_id"],
+            "operation_id": "fallback",
+            "amount": "120",
+            "currency": "USD",
+            "description": "Example",
+        }
+        for fields in (
+            {},
+            {"receipt_ref": new_public_ref("src"), "manual_entry_requested": True},
+            {"operation_id": args["operation_id"], "manual_entry_requested": True},
+        ):
+            rejected = await call("docket_record_expense", {**standalone, **fields})
+            assert rejected["error"]["code"] == "expense_original_required", rejected
+        with session_factory() as session:
+            assert session.scalar(select(Expense.ref_id)) is None
+            assert session.scalar(select(FinancialIntake.source_ref)) is None
         monkeypatch.setattr(native, "download_file", lambda *args: blob)
         receipt = await call("docket_submit_financial_evidence", args)
         assert receipt.get("source_accepted"), receipt
@@ -412,6 +431,15 @@ def test_download_host_boundary_and_private_capability(monkeypatch, caplog):
         files.download_file(approved_url, hosts, 100)
     assert unavailable.value.code == "file_download_unavailable"
     assert "synthetic-private" not in str(unavailable.value.as_dict())
+
+    def offline(self, method, path):
+        raise files.socket.gaierror("synthetic-private")
+
+    monkeypatch.setattr(Connection, "request", offline)
+    with pytest.raises(DocketError) as dns:
+        files.download_file(approved_url, hosts, 100)
+    assert dns.value.code == "file_download_dns_failed"
+    assert "synthetic-private" not in str(dns.value.as_dict())
     assert "synthetic-private" not in caplog.text
 
 
