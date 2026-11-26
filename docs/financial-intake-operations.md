@@ -17,6 +17,15 @@ amount alongside the business amount. Reviewed deductions require a tax-treatmen
 
 ### Recover an attachment handoff
 
+Docket detects PDFs from their original bytes. A filename extension is optional.
+For a single-page invoice with a seller beside the billing column, extraction
+checks the issue date, explicit currency and agreement between total and amount
+due. When a retained PDF still has incomplete purchase fields, the authorized
+agent can read its text with `docket_read_attachment_text`, check existing costs
+and link the supported expense using the original source. After linking, the
+receipt continues to show the extractor's historical result and the current
+expense disposition separately.
+
 The connected client supplies a temporarily authorized download URL with the selected
 attachment. A bare file ID or local file reference reaching Docket returns
 `file_attachment_not_bound`. An unapproved initial URL returns `file_host_not_approved`.

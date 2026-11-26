@@ -106,7 +106,20 @@ card,” pass business_use_percent=60 and reported_instrument="Savor". Docket tr
 that 60% as intended for claim. For “60% business, do not claim,” also pass
 write_off_intent=false. An omitted or zero percentage supplies no default intent.
 Use docket_get_financial_context
-with its intake_ref for processing status. Link or adopt candidates with docket_update_financial_candidate.
+with its intake_ref for processing status. When asked to log an expense, follow
+pending extraction through to its purchase outcome. Check for an existing cost
+before adopting or linking it with docket_update_financial_candidate.
+
+For an accepted PDF that returns evidence_only, use docket_read_attachment_text
+with the retained source_ref and follow its page cursor. If the document clearly
+supports one purchase, use its vendor, issue date, description, total and explicit
+currency. Check existing expenses for the same invoice. Link a match. Otherwise
+call docket_record_expense with receipt_ref=source_ref and source_method="import".
+For one purchase in the whole file use external_source="financial_receipt_sha256"
+and external_id=original_sha256 for retries. Link that expense to the candidate
+using intake context with the expense in refs. Read back the linked declarations.
+Leave ambiguous costs for review. A mixed or unreadable document needs its own
+review. Amount due is separate from a payment observation.
 A posted charge, reviewed deduction and mailbox declaration each require their own basis.
 
 
